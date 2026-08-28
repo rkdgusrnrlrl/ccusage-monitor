@@ -36,6 +36,38 @@ CommandCode API 키는 다음 순서로 찾는다.
 $env:COMMANDCODE_API_KEY = "your-commandcode-api-key"
 ```
 
+두 CommandCode 계정을 함께 표시하려면 각 계정의 키와 사용자 ID를 환경 변수로 설정한다.
+
+```powershell
+$env:COMMANDCODE_API_KEY_PERSONAL = "personal-api-key"
+$env:COMMANDCODE_USER_ID_PERSONAL = "personal-user-id"
+$env:COMMANDCODE_API_KEY_WORK = "work-api-key"
+$env:COMMANDCODE_USER_ID_WORK = "work-user-id"
+```
+
+두 키 중 하나라도 설정하면 창은 Codex와 두 CommandCode 계정을 나란히 표시한다. CommandCode API 응답에는 사용자 ID가 없으므로, 두 번째 계정의 ID는 해당 환경 변수로 제공해야 한다.
+
+### 설정 파일 사용
+
+환경 변수 대신 실행 파일 또는 `ccusage_window.pyw`와 같은 폴더에 `config.json`을 둘 수 있다. `dist` 폴더에 실행 파일을 둔 개발 환경에서는 프로젝트 루트의 `config.json`도 자동으로 찾는다. 먼저 `config.example.json`을 복사해 `config.json`으로 이름을 바꾸고, 각 계정의 실제 API 키를 입력한다.
+
+```json
+{
+  "commandcode_accounts": [
+    {
+      "id": "personal",
+      "api_key": "first-commandcode-api-key"
+    },
+    {
+      "id": "work",
+      "api_key": "second-commandcode-api-key"
+    }
+  ]
+}
+```
+
+`id`는 화면의 `CommandCode(id)` 제목에만 쓰이며, 계정 구분용 별칭을 넣어도 된다. `config.json`은 `.gitignore`에 포함되어 GitHub에 올라가지 않는다. 설정 파일이 있으면 환경 변수보다 먼저 사용한다.
+
 Codex 사용량은 별도 토큰을 저장하지 않고, 현재 로그인된 Codex CLI의 로컬 app-server 인터페이스를 사용한다.
 
 ```powershell

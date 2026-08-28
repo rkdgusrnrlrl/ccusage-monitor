@@ -41,6 +41,21 @@ class CommandCodeError(RuntimeError):
     pass
 
 
+def get_local_account_id() -> str | None:
+    """Return the authenticated CommandCode user ID when it is available."""
+    auth_path = Path.home() / ".commandcode" / "auth.json"
+    if not auth_path.exists():
+        return None
+
+    try:
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    user_id = auth.get("userId")
+    return user_id.strip() if isinstance(user_id, str) and user_id.strip() else None
+
+
 def get_api_key() -> str:
     """Find a CommandCode API key from env vars or ~/.commandcode/auth.json."""
     for name in ("COMMANDCODE_API_KEY", "COMMAND_CODE_API_KEY"):
