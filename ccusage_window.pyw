@@ -39,6 +39,20 @@ logging.basicConfig(
 LOGGER = logging.getLogger("ccusage-monitor")
 
 
+def hidden_subprocess_options() -> dict[str, Any]:
+    """Prevent helper console windows from appearing in the GUI application."""
+    if os.name != "nt":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
 def find_codex_command() -> str:
     codex_command = shutil.which("codex")
     if codex_command is None:
@@ -77,7 +91,7 @@ class CodexRateLimitClient:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **hidden_subprocess_options(),
         )
         self.output_queue = queue.Queue()
 
@@ -170,6 +184,7 @@ class CodexRateLimitClient:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
+                    **hidden_subprocess_options(),
                 )
             else:
                 self.process.kill()
