@@ -48,6 +48,7 @@ def application_directory() -> Path:
 
 
 CONFIG_PATH = application_directory() / "config.json"
+PARENT_CONFIG_PATH = application_directory().parent / "config.json"
 
 
 def hidden_subprocess_options() -> dict[str, Any]:
@@ -117,21 +118,29 @@ def get_commandcode_accounts() -> list[dict[str, str]]:
 
 
 def load_config_accounts() -> list[dict[str, str]] | None:
-    """Load account keys from an optional config.json beside the application."""
-    if not CONFIG_PATH.exists():
+    """Load account keys from config beside the app or its project folder."""
+    config_path = next(
+        (
+            path
+            for path in (CONFIG_PATH, PARENT_CONFIG_PATH)
+            if path.exists()
+        ),
+        None,
+    )
+    if config_path is None:
         return None
 
     try:
-        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        config = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ccusage.CommandCodeError(
-            f"Could not read {CONFIG_PATH.name}: {exc}"
+            f"Could not read {config_path.name}: {exc}"
         ) from exc
 
     accounts = config.get("commandcode_accounts")
     if not isinstance(accounts, list) or not 1 <= len(accounts) <= 2:
         raise ccusage.CommandCodeError(
-            f"{CONFIG_PATH.name} must contain one or two commandcode_accounts."
+            f"{config_path.name} must contain one or two commandcode_accounts."
         )
 
     result: list[dict[str, str]] = []

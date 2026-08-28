@@ -49,7 +49,7 @@ $env:COMMANDCODE_USER_ID_WORK = "work-user-id"
 
 ### 설정 파일 사용
 
-환경 변수 대신 실행 파일 또는 `ccusage_window.pyw`와 같은 폴더에 `config.json`을 둘 수 있다. 먼저 `config.example.json`을 복사해 `config.json`으로 이름을 바꾸고, 각 계정의 실제 API 키를 입력한다.
+환경 변수 대신 실행 파일 또는 `ccusage_window.pyw`와 같은 폴더에 `config.json`을 둘 수 있다. `dist` 폴더에 실행 파일을 둔 개발 환경에서는 프로젝트 루트의 `config.json`도 자동으로 찾는다. 먼저 `config.example.json`을 복사해 `config.json`으로 이름을 바꾸고, 각 계정의 실제 API 키를 입력한다.
 
 ```json
 {
