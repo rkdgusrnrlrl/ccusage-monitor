@@ -6,9 +6,11 @@ from __future__ import annotations
 import queue
 import argparse
 import json
-import threading
+import logging
+import os
 import shutil
 import subprocess
+import threading
 import time
 import tkinter as tk
 from datetime import datetime
@@ -22,10 +24,22 @@ import ccusage
 WINDOW_WIDTH = 430
 WINDOW_HEIGHT = 145
 CODEX_TIMEOUT = 15
+LOG_PATH = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    / "ccusage-monitor"
+    / "ccusage.log"
+)
+
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    filename=LOG_PATH,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+LOGGER = logging.getLogger("ccusage-monitor")
 
 
-def fetch_codex_rate_limits() -> dict[str, Any]:
-    """Read the signed-in Codex account's rolling rate limits via app-server."""
+def find_codex_command() -> str:
     codex_command = shutil.which("codex")
     if codex_command is None:
         fallback = (
@@ -41,39 +55,73 @@ def fetch_codex_rate_limits() -> dict[str, Any]:
         codex_command = str(fallback) if fallback.exists() else None
     if codex_command is None:
         raise RuntimeError("Codex CLI not found")
+    return codex_command
 
-    process = subprocess.Popen(
-        [codex_command, "app-server", "--listen", "stdio://"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    output_queue: queue.Queue[str] = queue.Queue()
 
-    def read_output() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
-            output_queue.put(line)
+class CodexRateLimitClient:
+    """Keep one app-server alive and restart it only after a real failure."""
 
-    threading.Thread(target=read_output, daemon=True).start()
+    def __init__(self) -> None:
+        self.process: subprocess.Popen[str] | None = None
+        self.output_queue: queue.Queue[str] = queue.Queue()
+        self.lock = threading.Lock()
+        self.next_request_id = 1
 
-    def send(message: dict[str, Any]) -> None:
-        if process.stdin is None:
+    def _start(self) -> None:
+        codex_command = find_codex_command()
+        LOGGER.info("Starting Codex app-server: %s", codex_command)
+        self.process = subprocess.Popen(
+            [codex_command, "app-server", "--listen", "stdio://"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self.output_queue = queue.Queue()
+
+        def read_output() -> None:
+            assert self.process is not None
+            assert self.process.stdout is not None
+            for line in self.process.stdout:
+                self.output_queue.put(line)
+
+        threading.Thread(target=read_output, daemon=True).start()
+        self._send(
+            {
+                "id": self._request_id(),
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "ccusage-window",
+                        "version": "1.0.0",
+                    }
+                },
+            }
+        )
+        self._wait_for(self.next_request_id - 1)
+        self._send({"method": "initialized"})
+
+    def _request_id(self) -> int:
+        request_id = self.next_request_id
+        self.next_request_id += 1
+        return request_id
+
+    def _send(self, message: dict[str, Any]) -> None:
+        if self.process is None or self.process.stdin is None:
             raise RuntimeError("Codex app-server stdin unavailable")
-        process.stdin.write(json.dumps(message) + "\n")
-        process.stdin.flush()
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
 
-    def wait_for(response_id: int) -> dict[str, Any]:
+    def _wait_for(self, response_id: int) -> dict[str, Any]:
         deadline = time.monotonic() + CODEX_TIMEOUT
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError("Codex usage request timed out")
             try:
-                line = output_queue.get(timeout=remaining)
+                line = self.output_queue.get(timeout=remaining)
             except queue.Empty as exc:
                 raise RuntimeError("Codex usage request timed out") from exc
             try:
@@ -85,38 +133,51 @@ def fetch_codex_rate_limits() -> dict[str, Any]:
                     raise RuntimeError(str(response["error"]))
                 return response
 
+    def read_rate_limits(self) -> dict[str, Any]:
+        with self.lock:
+            try:
+                if self.process is None or self.process.poll() is not None:
+                    self._close_process()
+                    self._start()
+
+                request_id = self._request_id()
+                self._send({"id": request_id, "method": "account/rateLimits/read"})
+                response = self._wait_for(request_id)
+                rate_limits = response.get("result", {}).get("rateLimits") or {}
+                primary = rate_limits.get("primary")
+                secondary = rate_limits.get("secondary")
+                if not isinstance(primary, dict) or not isinstance(secondary, dict):
+                    raise RuntimeError("Codex rate limit windows unavailable")
+                return {
+                    "primary": normalize_codex_window(primary),
+                    "secondary": normalize_codex_window(secondary),
+                }
+            except Exception:
+                LOGGER.exception("Codex app-server request failed")
+                self._close_process()
+                raise
+
+    def _close_process(self) -> None:
+        if self.process is None:
+            return
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait()
+        self.process = None
+
+    def close(self) -> None:
+        with self.lock:
+            LOGGER.info("Stopping Codex app-server")
+            self._close_process()
+
+
+def fetch_codex_rate_limits() -> dict[str, Any]:
+    """Compatibility helper for one-off callers."""
+    client = CodexRateLimitClient()
     try:
-        send(
-            {
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "clientInfo": {
-                        "name": "ccusage-window",
-                        "version": "1.0.0",
-                    }
-                },
-            }
-        )
-        wait_for(1)
-        send({"method": "initialized"})
-        send({"id": 2, "method": "account/rateLimits/read"})
-        response = wait_for(2)
+        return client.read_rate_limits()
     finally:
-        if process.poll() is None:
-            process.kill()
-        process.wait()
-
-    rate_limits = response.get("result", {}).get("rateLimits") or {}
-    primary = rate_limits.get("primary")
-    secondary = rate_limits.get("secondary")
-    if not isinstance(primary, dict) or not isinstance(secondary, dict):
-        raise RuntimeError("Codex rate limit windows unavailable")
-
-    return {
-        "primary": normalize_codex_window(primary),
-        "secondary": normalize_codex_window(secondary),
-    }
+        client.close()
 
 
 def normalize_codex_window(window: dict[str, Any]) -> dict[str, Any]:
@@ -145,10 +206,11 @@ class UsageWindow(tk.Tk):
         self.after_id: str | None = None
         self.interval = interval
         self.refresh_ms = interval * 1000
+        self.codex_client = CodexRateLimitClient()
 
         self._configure_style()
         self._build_widgets()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.after_id = self.after(100, self.refresh)
 
     def _configure_style(self) -> None:
@@ -293,11 +355,17 @@ class UsageWindow(tk.Tk):
             errors.append(f"CommandCode: {exc}")
 
         try:
-            codex_data = fetch_codex_rate_limits()
+            codex_data = self.codex_client.read_rate_limits()
         except Exception as exc:  # The message is shown in the small status area.
             errors.append(f"Codex: {exc}")
 
         self.result_queue.put(("data", (commandcode_data, codex_data, errors)))
+
+    def _close(self) -> None:
+        if self.after_id is not None:
+            self.after_cancel(self.after_id)
+        self.codex_client.close()
+        self.destroy()
 
     def _consume_results(self) -> None:
         try:

@@ -12,6 +12,8 @@ CommandCode와 Codex의 사용량을 작은 Windows 창에서 함께 확인하�
 - 기본 10초 주기 자동 갱신
 - API 요청을 백그라운드에서 처리해 창이 멈추지 않음
 - CommandCode와 Codex 중 한쪽에 문제가 생겨도 다른 쪽은 계속 표시
+- Codex app-server를 재사용해 반복 실행과 강제 종료를 방지
+- Codex 연결 오류 및 재연결 기록을 `%LOCALAPPDATA%\ccusage-monitor\ccusage.log`에 저장
 
 ## 요구 사항
 
