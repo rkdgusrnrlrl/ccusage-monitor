@@ -160,8 +160,19 @@ class CodexRateLimitClient:
     def _close_process(self) -> None:
         if self.process is None:
             return
+        process_id = self.process.pid
         if self.process.poll() is None:
-            self.process.kill()
+            if os.name == "nt":
+                # Codex may create a child process for app-server. Terminating
+                # only the Popen parent leaves that child orphaned on Windows.
+                subprocess.run(
+                    ["taskkill", "/PID", str(process_id), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            else:
+                self.process.kill()
         self.process.wait()
         self.process = None
 
@@ -461,12 +472,12 @@ def parse_args() -> argparse.Namespace:
         "--interval",
         "-i",
         type=int,
-        default=10,
-        help="Refresh interval in seconds. Default: 10",
+        default=1,
+        help="Refresh interval in seconds. Default: 1",
     )
     args = parser.parse_args()
-    if args.interval < 2:
-        parser.error("--interval must be at least 2 seconds")
+    if args.interval < 1:
+        parser.error("--interval must be at least 1 second")
     return args
 
 

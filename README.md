@@ -9,7 +9,7 @@ CommandCode와 Codex의 사용량을 작은 Windows 창에서 함께 확인하�
 - CommandCode 5시간 / 주간 사용량 표시
 - 사용률 게이지와 reset까지 남은 시간 표시
 - 80% 이상 주황색, 95% 이상 빨간색 표시
-- 기본 10초 주기 자동 갱신
+- 기본 1초 주기 자동 갱신
 - API 요청을 백그라운드에서 처리해 창이 멈추지 않음
 - CommandCode와 Codex 중 한쪽에 문제가 생겨도 다른 쪽은 계속 표시
 - Codex app-server를 재사용해 반복 실행과 강제 종료를 방지
@@ -56,7 +56,17 @@ python .\ccusage_window.pyw
 python .\ccusage_window.pyw --interval 5
 ```
 
-`-i` 옵션도 사용할 수 있다. 최소 갱신 주기는 2초다.
+`-i` 옵션도 사용할 수 있다. 최소 갱신 주기는 1초다.
+
+## 실행 파일 만들기
+
+PyInstaller가 설치되어 있다면 다음 명령으로 단일 실행 파일을 만들 수 있다.
+
+```powershell
+pyinstaller --onefile --windowed --name ccusage-monitor ccusage_window.pyw
+```
+
+생성된 `dist\ccusage-monitor.exe`를 더블클릭해 실행하면 된다. 실행 파일을 사용하려면 Codex CLI가 설치되어 있고 `codex login`이 완료되어 있어야 한다.
 
 ## 파일 구성
 
