@@ -22,7 +22,7 @@ import ccusage
 
 
 WINDOW_WIDTH = 430
-WINDOW_HEIGHT = 145
+WINDOW_HEIGHT = 170
 CODEX_TIMEOUT = 15
 LOG_PATH = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -206,6 +206,7 @@ class UsageWindow(tk.Tk):
     def __init__(self, interval: int) -> None:
         super().__init__()
         self.title("Command Code Usage")
+        self.overrideredirect(True)
         self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.maxsize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -218,6 +219,8 @@ class UsageWindow(tk.Tk):
         self.interval = interval
         self.refresh_ms = interval * 1000
         self.codex_client = CodexRateLimitClient()
+        self._drag_x = 0
+        self._drag_y = 0
 
         self._configure_style()
         self._build_widgets()
@@ -244,6 +247,41 @@ class UsageWindow(tk.Tk):
             )
 
     def _build_widgets(self) -> None:
+        titlebar = tk.Frame(self, bg="#1f2937", height=26)
+        titlebar.pack(fill="x")
+        titlebar.pack_propagate(False)
+        titlebar.bind("<ButtonPress-1>", self._start_move)
+        titlebar.bind("<B1-Motion>", self._move_window)
+
+        title = tk.Label(
+            titlebar,
+            text="Command Code Usage",
+            bg="#1f2937",
+            fg="#cbd5e1",
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        title.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        title.bind("<ButtonPress-1>", self._start_move)
+        title.bind("<B1-Motion>", self._move_window)
+
+        close_button = tk.Button(
+            titlebar,
+            text="×",
+            command=self._close,
+            bg="#1f2937",
+            fg="#cbd5e1",
+            activebackground="#dc2626",
+            activeforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            font=("Segoe UI", 12),
+            width=3,
+            cursor="hand2",
+        )
+        close_button.pack(side="right", fill="y")
+
         header_row = tk.Frame(self, bg="#111827")
         header_row.pack(fill="x", padx=12, pady=(8, 4))
 
@@ -286,6 +324,13 @@ class UsageWindow(tk.Tk):
         self._add_usage_row(codex_column, "codexWeekly", "7d")
         self._add_usage_row(commandcode_column, "fiveHour", "5h")
         self._add_usage_row(commandcode_column, "weekly", "7d")
+
+    def _start_move(self, event: tk.Event) -> None:
+        self._drag_x = event.x_root - self.winfo_x()
+        self._drag_y = event.y_root - self.winfo_y()
+
+    def _move_window(self, event: tk.Event) -> None:
+        self.geometry(f"+{event.x_root - self._drag_x}+{event.y_root - self._drag_y}")
 
     def _add_column_title(self, parent: tk.Widget, text: str) -> tk.Label:
         title = tk.Label(
