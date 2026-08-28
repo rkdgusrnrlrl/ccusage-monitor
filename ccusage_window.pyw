@@ -205,7 +205,7 @@ class UsageWindow(tk.Tk):
 
     def __init__(self, interval: int) -> None:
         super().__init__()
-        self.title("Command Code Usage")
+        self.title("AI Agent Usage")
         self.overrideredirect(True)
         self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -255,7 +255,7 @@ class UsageWindow(tk.Tk):
 
         title = tk.Label(
             titlebar,
-            text="Command Code Usage",
+            text="AI Agent Usage",
             bg="#1f2937",
             fg="#cbd5e1",
             font=("Segoe UI", 9),
