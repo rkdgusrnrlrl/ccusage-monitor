@@ -21,7 +21,7 @@ from typing import Any
 import ccusage
 
 
-WINDOW_WIDTH = 430
+WINDOW_WIDTH = 650
 WINDOW_HEIGHT = 170
 CODEX_TIMEOUT = 15
 LOG_PATH = (
@@ -70,6 +70,42 @@ def find_codex_command() -> str:
     if codex_command is None:
         raise RuntimeError("Codex CLI not found")
     return codex_command
+
+
+def get_commandcode_accounts() -> list[dict[str, str]]:
+    """Load up to two CommandCode accounts without persisting their secrets."""
+    configured_accounts = (
+        ("COMMANDCODE_API_KEY_PERSONAL", "COMMANDCODE_USER_ID_PERSONAL"),
+        ("COMMANDCODE_API_KEY_WORK", "COMMANDCODE_USER_ID_WORK"),
+    )
+    has_named_account = any(os.environ.get(key) for key, _ in configured_accounts)
+
+    if has_named_account:
+        accounts: list[dict[str, str]] = []
+        for key_name, id_name in configured_accounts:
+            api_key = os.environ.get(key_name, "").strip()
+            if api_key:
+                accounts.append(
+                    {
+                        "api_key": api_key,
+                        "account_id": os.environ.get(id_name, "").strip() or "unknown",
+                    }
+                )
+        return accounts
+
+    return [
+        {
+            "api_key": ccusage.get_api_key(),
+            "account_id": ccusage.get_local_account_id() or "unknown",
+        }
+    ]
+
+
+def format_commandcode_title(account_id: str) -> str:
+    """Keep a UUID-like account ID distinguishable within a compact column."""
+    if len(account_id) > 16:
+        account_id = f"{account_id[:8]}...{account_id[-4:]}"
+    return f"CommandCode ({account_id})"
 
 
 class CodexRateLimitClient:
@@ -324,21 +360,41 @@ class UsageWindow(tk.Tk):
         columns.pack(fill="both", expand=True, padx=12)
         columns.columnconfigure(0, weight=1)
         columns.columnconfigure(1, weight=1)
+        columns.columnconfigure(2, weight=1)
 
         codex_column = tk.Frame(columns, bg="#111827")
         codex_column.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         self.codex_title = self._add_column_title(codex_column, "Codex")
-        commandcode_column = tk.Frame(columns, bg="#111827")
-        commandcode_column.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        self.commandcode_title = self._add_column_title(
-            commandcode_column, "CommandCode"
-        )
+        self.commandcode_columns: list[tk.Frame] = []
+        self.commandcode_titles: list[tk.Label] = []
+        for index in range(2):
+            commandcode_column = tk.Frame(columns, bg="#111827")
+            commandcode_column.grid(
+                row=0,
+                column=index + 1,
+                sticky="nsew",
+                padx=(8, 0),
+            )
+            self.commandcode_columns.append(commandcode_column)
+            self.commandcode_titles.append(
+                self._add_column_title(commandcode_column, "CommandCode")
+            )
 
         self.rows: dict[str, dict[str, tk.Widget]] = {}
         self._add_usage_row(codex_column, "codexPrimary", "5h")
         self._add_usage_row(codex_column, "codexWeekly", "7d")
-        self._add_usage_row(commandcode_column, "fiveHour", "5h")
-        self._add_usage_row(commandcode_column, "weekly", "7d")
+        for index, commandcode_column in enumerate(self.commandcode_columns):
+            account_number = index + 1
+            self._add_usage_row(
+                commandcode_column,
+                f"commandcode{account_number}FiveHour",
+                "5h",
+            )
+            self._add_usage_row(
+                commandcode_column,
+                f"commandcode{account_number}Weekly",
+                "7d",
+            )
 
     def _start_move(self, event: tk.Event) -> None:
         self._drag_x = event.x_root - self.winfo_x()
@@ -415,13 +471,21 @@ class UsageWindow(tk.Tk):
         self.after(50, self._consume_results)
 
     def _fetch_usage(self) -> None:
-        commandcode_data: dict[str, Any] | None = None
+        commandcode_accounts: list[tuple[dict[str, str], dict[str, Any] | None]] = []
         codex_data: dict[str, Any] | None = None
         errors: list[str] = []
 
         try:
-            api_key = ccusage.get_api_key()
-            commandcode_data = ccusage.api_get(ccusage.CREDITS_ENDPOINT, api_key)
+            for account in get_commandcode_accounts():
+                try:
+                    data = ccusage.api_get(
+                        ccusage.CREDITS_ENDPOINT,
+                        account["api_key"],
+                    )
+                    commandcode_accounts.append((account, data))
+                except Exception as exc:
+                    commandcode_accounts.append((account, None))
+                    errors.append(f"CommandCode: {exc}")
         except Exception as exc:  # The message is shown in the small status area.
             errors.append(f"CommandCode: {exc}")
 
@@ -430,7 +494,7 @@ class UsageWindow(tk.Tk):
         except Exception as exc:  # The message is shown in the small status area.
             errors.append(f"Codex: {exc}")
 
-        self.result_queue.put(("data", (commandcode_data, codex_data, errors)))
+        self.result_queue.put(("data", (commandcode_accounts, codex_data, errors)))
 
     def _close(self) -> None:
         if self.after_id is not None:
@@ -448,8 +512,8 @@ class UsageWindow(tk.Tk):
 
         self.refresh_pending = False
         if kind == "data":
-            commandcode_data, codex_data, errors = value
-            self._update_usage(commandcode_data, codex_data, errors)
+            commandcode_accounts, codex_data, errors = value
+            self._update_usage(commandcode_accounts, codex_data, errors)
         else:
             self.status.configure(
                 text=f"Updated: failed - {value}",
@@ -458,14 +522,15 @@ class UsageWindow(tk.Tk):
 
     def _update_usage(
         self,
-        data: dict[str, Any] | None,
+        commandcode_accounts: list[tuple[dict[str, str], dict[str, Any] | None]],
         codex_data: dict[str, Any] | None,
         errors: list[str],
     ) -> None:
-        if data is None:
+        if not commandcode_accounts:
             self.header.configure(text="Usage unavailable")
         else:
-            self._update_commandcode_usage(data)
+            self.header.configure(text="Usage")
+        self._update_commandcode_usage(commandcode_accounts)
 
         if codex_data is None:
             self._clear_row(self.rows["codexPrimary"])
@@ -481,20 +546,32 @@ class UsageWindow(tk.Tk):
         else:
             self.status.configure(text=status, fg="#86efac")
 
-    def _update_commandcode_usage(self, data: dict[str, Any]) -> None:
-        credits = data.get("credits") or {}
-        limits = data.get("windowLimits") or {}
-        plan = ccusage.get_plan_name(credits.get("planId"))
-        compact_plan = plan.casefold().replace(" ", "")
-        title = "CommandCode" if compact_plan == "commandcode" else f"CommandCode {plan}"
-        self.commandcode_title.configure(text=title)
+    def _update_commandcode_usage(
+        self,
+        accounts: list[tuple[dict[str, str], dict[str, Any] | None]],
+    ) -> None:
+        for index in range(2):
+            account_number = index + 1
+            five_hour_row = self.rows[f"commandcode{account_number}FiveHour"]
+            weekly_row = self.rows[f"commandcode{account_number}Weekly"]
 
-        for key in ("fiveHour", "weekly"):
-            window = limits.get(key)
-            if isinstance(window, dict):
-                self._update_row(self.rows[key], window)
-            else:
-                self._clear_row(self.rows[key])
+            if index >= len(accounts):
+                self.commandcode_titles[index].configure(text="CommandCode (not configured)")
+                self._clear_row(five_hour_row)
+                self._clear_row(weekly_row)
+                continue
+
+            account, data = accounts[index]
+            self.commandcode_titles[index].configure(
+                text=format_commandcode_title(account["account_id"])
+            )
+            limits = (data or {}).get("windowLimits") or {}
+            for row, key in ((five_hour_row, "fiveHour"), (weekly_row, "weekly")):
+                window = limits.get(key)
+                if isinstance(window, dict):
+                    self._update_row(row, window)
+                else:
+                    self._clear_row(row)
 
     @staticmethod
     def _update_row(row: dict[str, tk.Widget], window: dict[str, Any]) -> None:
