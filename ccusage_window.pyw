@@ -470,7 +470,9 @@ class UsageWindow(tk.Tk):
         credits = data.get("credits") or {}
         limits = data.get("windowLimits") or {}
         plan = ccusage.get_plan_name(credits.get("planId"))
-        self.commandcode_title.configure(text=f"CommandCode {plan}")
+        compact_plan = plan.casefold().replace(" ", "")
+        title = "CommandCode" if compact_plan == "commandcode" else f"CommandCode {plan}"
+        self.commandcode_title.configure(text=title)
 
         for key in ("fiveHour", "weekly"):
             window = limits.get(key)
