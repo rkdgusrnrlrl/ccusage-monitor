@@ -76,3 +76,15 @@ pyinstaller --onefile --windowed --name ccusage-monitor ccusage_window.pyw
 ## 참고
 
 Codex 사용량 응답은 설치된 Codex CLI의 app-server 프로토콜에 의존한다. Codex CLI가 크게 업데이트되어 해당 인터페이스가 변경되면 Codex 표시 기능을 조정해야 할 수 있다.
+
+## 공개 및 보안 참고
+
+- 이 프로젝트에는 API 키나 Codex 인증 토큰이 포함되어 있지 않다.
+- CommandCode API 키는 환경 변수 또는 로컬 인증 파일에서만 읽는다.
+- Codex 인증은 설치된 Codex CLI의 로그인 상태를 사용한다.
+- CommandCode의 비공개 API와 Codex CLI app-server 인터페이스에 의존하므로, 서비스나 CLI 업데이트에 따라 동작이 바뀔 수 있다.
+- PyInstaller로 생성한 `dist` 폴더와 실행 파일은 저장소에서 추적하지 않는다.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
