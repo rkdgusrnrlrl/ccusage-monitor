@@ -259,7 +259,7 @@ class UsageWindow(tk.Tk):
 
         self.status = tk.Label(
             header_row,
-            text=f"Updated ({self.interval}s): connecting...",
+            text="Updated: connecting...",
             bg="#111827",
             fg="#94a3b8",
             font=("Segoe UI", 8),
@@ -392,7 +392,7 @@ class UsageWindow(tk.Tk):
             self._update_usage(commandcode_data, codex_data, errors)
         else:
             self.status.configure(
-                text=f"Updated ({self.interval}s): failed - {value}",
+                text=f"Updated: failed - {value}",
                 fg="#fca5a5",
             )
 
@@ -414,7 +414,7 @@ class UsageWindow(tk.Tk):
             self._update_row(self.rows["codexPrimary"], codex_data["primary"])
             self._update_row(self.rows["codexWeekly"], codex_data["secondary"])
 
-        status = f"Updated ({self.interval}s): {datetime.now():%H:%M:%S}"
+        status = f"Updated: {datetime.now():%H:%M:%S}"
         if errors:
             status += "  •  " + errors[0].split(": ", 1)[0] + " unavailable"
             self.status.configure(text=status, fg="#fca5a5")
