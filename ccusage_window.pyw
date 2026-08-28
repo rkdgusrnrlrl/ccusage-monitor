@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -37,6 +38,16 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 LOGGER = logging.getLogger("ccusage-monitor")
+
+
+def application_directory() -> Path:
+    """Return the folder containing this script or packaged executable."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+CONFIG_PATH = application_directory() / "config.json"
 
 
 def hidden_subprocess_options() -> dict[str, Any]:
@@ -74,6 +85,10 @@ def find_codex_command() -> str:
 
 def get_commandcode_accounts() -> list[dict[str, str]]:
     """Load up to two CommandCode accounts without persisting their secrets."""
+    configured_accounts = load_config_accounts()
+    if configured_accounts is not None:
+        return configured_accounts
+
     configured_accounts = (
         ("COMMANDCODE_API_KEY_PERSONAL", "COMMANDCODE_USER_ID_PERSONAL"),
         ("COMMANDCODE_API_KEY_WORK", "COMMANDCODE_USER_ID_WORK"),
@@ -99,6 +114,46 @@ def get_commandcode_accounts() -> list[dict[str, str]]:
             "account_id": ccusage.get_local_account_id() or "unknown",
         }
     ]
+
+
+def load_config_accounts() -> list[dict[str, str]] | None:
+    """Load account keys from an optional config.json beside the application."""
+    if not CONFIG_PATH.exists():
+        return None
+
+    try:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ccusage.CommandCodeError(
+            f"Could not read {CONFIG_PATH.name}: {exc}"
+        ) from exc
+
+    accounts = config.get("commandcode_accounts")
+    if not isinstance(accounts, list) or not 1 <= len(accounts) <= 2:
+        raise ccusage.CommandCodeError(
+            f"{CONFIG_PATH.name} must contain one or two commandcode_accounts."
+        )
+
+    result: list[dict[str, str]] = []
+    for index, account in enumerate(accounts, start=1):
+        if not isinstance(account, dict):
+            raise ccusage.CommandCodeError(
+                f"commandcode_accounts[{index}] must be an object."
+            )
+        api_key = account.get("api_key")
+        account_id = account.get("id", "unknown")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ccusage.CommandCodeError(
+                f"commandcode_accounts[{index}].api_key is required."
+            )
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ccusage.CommandCodeError(
+                f"commandcode_accounts[{index}].id must be a non-empty string."
+            )
+        result.append(
+            {"api_key": api_key.strip(), "account_id": account_id.strip()}
+        )
+    return result
 
 
 def format_commandcode_title(account_id: str) -> str:

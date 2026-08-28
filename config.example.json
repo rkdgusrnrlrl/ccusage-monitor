@@ -1,0 +1,12 @@
+{
+  "commandcode_accounts": [
+    {
+      "id": "personal",
+      "api_key": "paste-first-commandcode-api-key-here"
+    },
+    {
+      "id": "work",
+      "api_key": "paste-second-commandcode-api-key-here"
+    }
+  ]
+}
