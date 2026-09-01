@@ -172,12 +172,25 @@ def normalize_timestamp(value: Any) -> float | None:
     """
     Convert an epoch timestamp to seconds.
 
-    Handles both:
+    Handles:
       - milliseconds: 1760000000000
       - seconds:      1760000000
+      - numeric strings of either form
+      - ISO 8601 datetimes
     """
     if value is None:
         return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if any(marker in text for marker in ("T", "Z", "+", "-")) and not text.replace(".", "", 1).isdigit():
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        value = text
 
     try:
         ts = float(value)
@@ -210,6 +223,81 @@ def format_duration(delta: timedelta) -> str:
         parts.append(f"{seconds}s")
 
     return " ".join(parts)
+
+
+PACE_WINDOW_DAYS = 7.0
+
+
+def this_week_sunday_end(now_ts: float) -> float:
+    """Return the exclusive end of this week's Sunday in the local timezone."""
+    now = datetime.fromtimestamp(now_ts).astimezone()
+    sunday = now.date() + timedelta(days=(6 - now.weekday()))
+    monday = datetime.combine(
+        sunday + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=now.tzinfo,
+    )
+    return monday.timestamp()
+
+
+def _cycle_percent(start: float, end: float, at_ts: float) -> float:
+    return max(0.0, min(1.0, (at_ts - start) / (end - start))) * 100.0
+
+
+def monthly_pace(
+    actual_percent: float,
+    period_start: Any,
+    period_end: Any,
+    *,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Compare actual usage against the monthly budget allowed by this Sunday.
+
+    The marker is the share of the billing cycle that runs through the end of
+    this week's Sunday, not elapsed time so far. Cycle date checks stay on
+    Unix epoch; the Sunday boundary uses the local calendar.
+    Returns None when the cycle dates are missing, invalid, or already over.
+    """
+    start = normalize_timestamp(period_start)
+    end = normalize_timestamp(period_end)
+    if start is None or end is None or end <= start:
+        return None
+
+    now_ts = time.time() if now is None else now
+    if now_ts >= end:
+        return None
+
+    sunday_end = this_week_sunday_end(now_ts)
+    expected_percent = _cycle_percent(start, end, min(sunday_end, end))
+    previous_sunday_end = (
+        datetime.fromtimestamp(sunday_end).astimezone() - timedelta(days=7)
+    ).timestamp()
+    previous_allowed = (
+        _cycle_percent(start, end, min(previous_sunday_end, end))
+        if previous_sunday_end > start
+        else 0.0
+    )
+    week_budget = max(0.0, expected_percent - previous_allowed)
+    daily_budget_percent = (
+        week_budget / PACE_WINDOW_DAYS if week_budget > 0 else 100.0 / PACE_WINDOW_DAYS
+    )
+    delta_points = actual_percent - expected_percent
+
+    if delta_points > daily_budget_percent * 3:
+        status = "severe"
+    elif delta_points > daily_budget_percent:
+        status = "over"
+    elif abs(delta_points) <= daily_budget_percent:
+        status = "on"
+    else:
+        status = "under"
+
+    return {
+        "expectedPercent": expected_percent,
+        "deltaPoints": delta_points,
+        "dailyBudgetPercent": daily_budget_percent,
+        "status": status,
+    }
 
 
 def format_reset(reset_at: Any) -> str:

@@ -1,4 +1,7 @@
 {
+  "cursor": {
+    "enabled": true
+  },
   "commandcode_accounts": [
     {
       "id": "personal",
