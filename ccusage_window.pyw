@@ -22,7 +22,8 @@ import ccusage
 import cursor_usage
 
 
-WINDOW_WIDTH = 870
+COLUMN_WIDTH = 210
+WINDOW_CHROME_WIDTH = 30
 WINDOW_HEIGHT = 220
 USAGE_SLOT_HEIGHT = 40
 SPACED_GAP_HEIGHT = 20
@@ -147,52 +148,31 @@ def is_cursor_enabled() -> bool:
     return True
 
 
+def window_width_for_columns(column_count: int) -> int:
+    """Scale the compact window to the number of visible provider columns."""
+    return WINDOW_CHROME_WIDTH + COLUMN_WIDTH * max(1, column_count)
+
+
 def get_commandcode_accounts() -> list[dict[str, str]]:
-    """Load up to two CommandCode accounts without persisting their secrets."""
-    configured_accounts = load_config_accounts()
-    if configured_accounts is not None:
-        return configured_accounts
-
-    configured_accounts = (
-        ("COMMANDCODE_API_KEY_PERSONAL", "COMMANDCODE_USER_ID_PERSONAL"),
-        ("COMMANDCODE_API_KEY_WORK", "COMMANDCODE_USER_ID_WORK"),
-    )
-    has_named_account = any(os.environ.get(key) for key, _ in configured_accounts)
-
-    if has_named_account:
-        accounts: list[dict[str, str]] = []
-        for key_name, id_name in configured_accounts:
-            api_key = os.environ.get(key_name, "").strip()
-            if api_key:
-                accounts.append(
-                    {
-                        "api_key": api_key,
-                        "account_id": os.environ.get(id_name, "").strip() or "unknown",
-                    }
-                )
-        return accounts
-
-    return [
-        {
-            "api_key": ccusage.get_api_key(),
-            "account_id": ccusage.get_local_account_id() or "unknown",
-        }
-    ]
+    """Load CommandCode accounts from config.json. Missing config or key means none."""
+    return load_config_accounts()
 
 
-def load_config_accounts() -> list[dict[str, str]] | None:
+def load_config_accounts() -> list[dict[str, str]]:
     """Load account keys from config beside the app or its project folder."""
     config = load_app_config()
     if config is None:
-        return None
+        return []
 
     accounts = config.get("commandcode_accounts")
     if accounts is None:
-        return None
-    if not isinstance(accounts, list) or not 1 <= len(accounts) <= 2:
+        return []
+    if not isinstance(accounts, list) or len(accounts) > 2:
         raise ccusage.CommandCodeError(
-            "config.json must contain one or two commandcode_accounts."
+            "config.json commandcode_accounts must be a list of 0 to 2 accounts."
         )
+    if not accounts:
+        return []
 
     result: list[dict[str, str]] = []
     for index, account in enumerate(accounts, start=1):
@@ -435,9 +415,22 @@ class UsageWindow(tk.Tk):
         super().__init__()
         self.title("AI Agent Usage")
         self.overrideredirect(True)
-        self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.maxsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.cursor_enabled = is_cursor_enabled()
+        self.commandcode_config_error: str | None = None
+        try:
+            self.commandcode_accounts = get_commandcode_accounts()
+        except ccusage.CommandCodeError as exc:
+            self.commandcode_accounts = []
+            self.commandcode_config_error = str(exc)
+        self.column_count = (
+            1
+            + int(self.cursor_enabled)
+            + len(self.commandcode_accounts)
+        )
+        self.window_width = window_width_for_columns(self.column_count)
+        self.geometry(f"{self.window_width}x{WINDOW_HEIGHT}")
+        self.minsize(self.window_width, WINDOW_HEIGHT)
+        self.maxsize(self.window_width, WINDOW_HEIGHT)
         self.resizable(False, False)
         self.attributes("-topmost", True)
 
@@ -523,36 +516,46 @@ class UsageWindow(tk.Tk):
 
         columns = tk.Frame(self, bg="#111827")
         columns.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        for index in range(4):
+        for index in range(self.column_count):
             columns.columnconfigure(index, weight=1, uniform="col")
         columns.rowconfigure(0, weight=1)
-        padx_by_col = ((0, 8), (8, 8), (8, 8), (8, 0))
 
         self.rows: dict[str, dict[str, tk.Widget]] = {}
+        column_index = 0
         self.codex_title, codex_body = self._add_provider_column(
-            columns, 0, "Codex", padx_by_col[0], title_pady=SPACED_TITLE_PADY
+            columns,
+            column_index,
+            "Codex",
+            self._column_padx(column_index),
+            title_pady=SPACED_TITLE_PADY,
         )
         self._configure_row_slots(codex_body, gap=SPACED_GAP_HEIGHT)
         self._add_usage_row(self._row_slot(codex_body, 0), "codexPrimary", "5h")
         self._row_slot(codex_body, 1)
         self._add_usage_row(self._row_slot(codex_body, 2), "codexWeekly", "7d")
+        column_index += 1
 
-        self.cursor_title, cursor_body = self._add_provider_column(
-            columns, 1, "Cursor", padx_by_col[1]
-        )
-        self._configure_row_slots(cursor_body)
-        self._add_usage_row(self._row_slot(cursor_body, 0), "cursorModels", "cur")
-        self._add_usage_row(self._row_slot(cursor_body, 1), "cursorOtherModels", "api")
-        self._add_usage_row(self._row_slot(cursor_body, 2), "cursorGrokBot", "bot")
+        self.cursor_title: tk.Label | None = None
+        if self.cursor_enabled:
+            self.cursor_title, cursor_body = self._add_provider_column(
+                columns, column_index, "Cursor", self._column_padx(column_index)
+            )
+            self._configure_row_slots(cursor_body)
+            self._add_usage_row(self._row_slot(cursor_body, 0), "cursorModels", "cur")
+            self._add_usage_row(
+                self._row_slot(cursor_body, 1), "cursorOtherModels", "api"
+            )
+            self._add_usage_row(self._row_slot(cursor_body, 2), "cursorGrokBot", "bot")
+            column_index += 1
 
-        self.commandcode_titles = []
-        for index in range(2):
+        self.commandcode_titles: list[tk.Label] = []
+        for index, account in enumerate(self.commandcode_accounts):
             account_number = index + 1
             title, body = self._add_provider_column(
                 columns,
-                index + 2,
-                "CommandCode",
-                padx_by_col[index + 2],
+                column_index,
+                format_commandcode_title(account["account_id"]),
+                self._column_padx(column_index),
                 title_pady=SPACED_TITLE_PADY,
             )
             self.commandcode_titles.append(title)
@@ -564,6 +567,12 @@ class UsageWindow(tk.Tk):
             self._add_usage_row(
                 self._row_slot(body, 2), f"commandcode{account_number}Weekly", "7d"
             )
+            column_index += 1
+
+    def _column_padx(self, index: int) -> tuple[int, int]:
+        left = 0 if index == 0 else 8
+        right = 0 if index == self.column_count - 1 else 8
+        return (left, right)
 
     def _start_move(self, event: tk.Event) -> None:
         self._drag_x = event.x_root - self.winfo_x()
@@ -679,8 +688,10 @@ class UsageWindow(tk.Tk):
         codex_data: dict[str, Any] | None = None
         errors: list[str] = []
 
-        try:
-            for account in get_commandcode_accounts():
+        if self.commandcode_config_error:
+            errors.append(f"CommandCode: {self.commandcode_config_error}")
+        else:
+            for account in self.commandcode_accounts:
                 try:
                     data = ccusage.api_get(
                         ccusage.CREDITS_ENDPOINT,
@@ -690,10 +701,8 @@ class UsageWindow(tk.Tk):
                 except Exception as exc:
                     commandcode_accounts.append((account, None))
                     errors.append(f"CommandCode: {exc}")
-        except Exception as exc:  # The message is shown in the small status area.
-            errors.append(f"CommandCode: {exc}")
 
-        if is_cursor_enabled():
+        if self.cursor_enabled:
             try:
                 cursor_data = self.cursor_client.read_usage()
             except Exception as exc:  # The message is shown in the small status area.
@@ -764,21 +773,19 @@ class UsageWindow(tk.Tk):
         self,
         accounts: list[tuple[dict[str, str], dict[str, Any] | None]],
     ) -> None:
-        for index in range(2):
+        for index, title in enumerate(self.commandcode_titles):
             account_number = index + 1
             five_hour_row = self.rows[f"commandcode{account_number}FiveHour"]
             weekly_row = self.rows[f"commandcode{account_number}Weekly"]
 
             if index >= len(accounts):
-                self.commandcode_titles[index].configure(text="CommandCode (not configured)")
+                title.configure(text="CommandCode")
                 self._clear_row(five_hour_row)
                 self._clear_row(weekly_row)
                 continue
 
             account, data = accounts[index]
-            self.commandcode_titles[index].configure(
-                text=format_commandcode_title(account["account_id"])
-            )
+            title.configure(text=format_commandcode_title(account["account_id"]))
             limits = (data or {}).get("windowLimits") or {}
             for row, key in ((five_hour_row, "fiveHour"), (weekly_row, "weekly")):
                 window = limits.get(key)
@@ -788,10 +795,10 @@ class UsageWindow(tk.Tk):
                     self._clear_row(row)
 
     def _update_cursor_usage(self, cursor_data: dict[str, Any] | None) -> None:
+        if not self.cursor_enabled or self.cursor_title is None:
+            return
         if cursor_data is None:
-            self.cursor_title.configure(
-                text="Cursor" if is_cursor_enabled() else "Cursor (off)"
-            )
+            self.cursor_title.configure(text="Cursor")
             self._clear_row(self.rows["cursorModels"])
             self._clear_row(self.rows["cursorOtherModels"])
             self._clear_row(self.rows["cursorGrokBot"])

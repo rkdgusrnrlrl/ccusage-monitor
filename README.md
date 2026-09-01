@@ -6,6 +6,7 @@ CommandCode, Codex, Cursor의 사용량을 작은 Windows 창에서 함께 확�
 
 - 항상 위에 표시되는 가로형 컴팩트 창
 - Codex·CommandCode는 5시간 / 7일 사용량을 위·아래에 두고 가운데는 비운다
+- CommandCode 열은 `config.json`의 `commandcode_accounts` 개수만큼만 나오고, 창 너비도 열 수에 맞춰 줄어든다
 - Cursor는 월간 `cur`(Cursor Models) / `api`(Other Models)와 주간 `bot`(Grok Bot)을 붙여서 표시
 - Cursor 월간 막대의 세로 눈금은 이번 주 일요일까지 월간 예산 중 써도 되는 한도다. 채움이 눈금보다 왼쪽이면 일요일까지 여유가 있고, 오른쪽이면 이번 주 한도를 넘긴 것이다
 - Cursor 월간 상세는 `pace ±Np · reset …`로 기대치와의 퍼센트포인트 차이를 보여 준다
@@ -23,12 +24,14 @@ CommandCode, Codex, Cursor의 사용량을 작은 Windows 창에서 함께 확�
 - Windows
 - Python 3.10 이상
 - Codex CLI 설치 및 로그인
-- Cursor IDE 설치 및 로그인
-- CommandCode API 키
+- Cursor 열을 쓸 경우 Cursor IDE 설치 및 로그인
+- CommandCode 열을 쓸 경우 `config.json`의 `commandcode_accounts`
 
 ## 설정
 
-CommandCode API 키는 다음 순서로 찾는다.
+창의 CommandCode 열은 `config.json`의 `commandcode_accounts`로만 켠다. 설정 파일이 없거나 이 키가 없으면 CommandCode 열을 만들지 않고, 창 너비도 나머지 열만 남도록 줄인다. 계정이 하나면 한 열만 표시한다.
+
+CLI `ccusage.py`의 API 키는 다음 순서로 찾는다.
 
 1. `COMMANDCODE_API_KEY` 환경 변수
 2. `COMMAND_CODE_API_KEY` 환경 변수
@@ -40,20 +43,9 @@ CommandCode API 키는 다음 순서로 찾는다.
 $env:COMMANDCODE_API_KEY = "your-commandcode-api-key"
 ```
 
-두 CommandCode 계정을 함께 표시하려면 각 계정의 키와 사용자 ID를 환경 변수로 설정한다.
-
-```powershell
-$env:COMMANDCODE_API_KEY_PERSONAL = "personal-api-key"
-$env:COMMANDCODE_USER_ID_PERSONAL = "personal-user-id"
-$env:COMMANDCODE_API_KEY_WORK = "work-api-key"
-$env:COMMANDCODE_USER_ID_WORK = "work-user-id"
-```
-
-두 키 중 하나라도 설정하면 창은 Codex와 두 CommandCode 계정을 나란히 표시한다. CommandCode API 응답에는 사용자 ID가 없으므로, 두 번째 계정의 ID는 해당 환경 변수로 제공해야 한다.
-
 ### 설정 파일 사용
 
-환경 변수 대신 실행 파일 또는 `ccusage_window.pyw`와 같은 폴더에 `config.json`을 둘 수 있다. `dist` 폴더에 실행 파일을 둔 개발 환경에서는 프로젝트 루트의 `config.json`도 자동으로 찾는다. 먼저 `config.example.json`을 복사해 `config.json`으로 이름을 바꾸고, 각 계정의 실제 API 키를 입력한다.
+실행 파일 또는 `ccusage_window.pyw`와 같은 폴더에 `config.json`을 둔다. `dist` 폴더에 실행 파일을 둔 개발 환경에서는 프로젝트 루트의 `config.json`도 자동으로 찾는다. 먼저 `config.example.json`을 복사해 `config.json`으로 이름을 바꾸고, 각 계정의 실제 API 키를 입력한다.
 
 ```json
 {
@@ -73,7 +65,7 @@ $env:COMMANDCODE_USER_ID_WORK = "work-user-id"
 }
 ```
 
-`id`는 화면의 `CommandCode(id)` 제목에만 쓰이며, 계정 구분용 별칭을 넣어도 된다. `config.json`은 `.gitignore`에 포함되어 GitHub에 올라가지 않는다. 설정 파일이 있으면 환경 변수보다 먼저 사용한다. Cursor 열을 끄려면 `"cursor": { "enabled": false }`를 넣는다.
+`id`는 화면의 `CommandCode(id)` 제목에만 쓰이며, 계정 구분용 별칭을 넣어도 된다. `commandcode_accounts`를 빼거나 빈 배열로 두면 CommandCode 열은 나오지 않는다. `config.json`은 `.gitignore`에 포함되어 GitHub에 올라가지 않는다. Cursor 열을 끄려면 `"cursor": { "enabled": false }`를 넣는다. Cursor를 끄거나 CommandCode 계정 수가 바뀌면 창 너비도 함께 바뀐다.
 
 Codex 사용량은 별도 토큰을 저장하지 않고, 현재 로그인된 Codex CLI의 로컬 app-server 인터페이스를 사용한다.
 
