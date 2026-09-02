@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import queue
 import argparse
+import ctypes
+from ctypes import wintypes
 import json
 import logging
 import os
@@ -43,6 +45,8 @@ GAUGE_COLORS = {
     "Orange": "#f59e0b",
     "Red": "#ef4444",
 }
+APP_TITLE = "AI Agent Usage"
+SINGLE_INSTANCE_MUTEX = "Local\\ccusage-monitor-single-instance"
 CURSOR_REFRESH_SECONDS = 30
 CURSOR_GROK_REFRESH_SECONDS = 1
 CODEX_TIMEOUT = 15
@@ -59,6 +63,64 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 LOGGER = logging.getLogger("ccusage-monitor")
+_single_instance_handle: int | None = None
+
+
+def acquire_single_instance() -> bool:
+    """Return false when another monitor instance already owns the mutex."""
+    global _single_instance_handle
+    if os.name != "nt":
+        return True
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (
+        wintypes.LPVOID,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    )
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    ctypes.set_last_error(0)
+    handle = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
+    if not handle:
+        LOGGER.error("Could not create the single-instance mutex")
+        return True
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return False
+
+    _single_instance_handle = handle
+    return True
+
+
+def release_single_instance() -> None:
+    """Release the process-lifetime mutex handle."""
+    global _single_instance_handle
+    if os.name == "nt" and _single_instance_handle is not None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(_single_instance_handle)
+        _single_instance_handle = None
+
+
+def activate_existing_window() -> None:
+    """Restore and foreground the existing borderless monitor window."""
+    if os.name != "nt":
+        return
+
+    user32 = ctypes.windll.user32
+    user32.FindWindowW.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p)
+    user32.FindWindowW.restype = ctypes.c_void_p
+    hwnd = user32.FindWindowW(None, APP_TITLE)
+    if not hwnd:
+        return
+
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
 
 
 def application_directory() -> Path:
@@ -413,7 +475,7 @@ class UsageWindow(tk.Tk):
 
     def __init__(self, interval: int) -> None:
         super().__init__()
-        self.title("AI Agent Usage")
+        self.title(APP_TITLE)
         self.overrideredirect(True)
         self.cursor_enabled = is_cursor_enabled()
         self.commandcode_config_error: str | None = None
@@ -464,7 +526,7 @@ class UsageWindow(tk.Tk):
 
         title = tk.Label(
             titlebar,
-            text="AI Agent Usage",
+            text=APP_TITLE,
             bg="#1f2937",
             fg="#cbd5e1",
             font=("Segoe UI", 9),
@@ -914,5 +976,11 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    app = UsageWindow(interval=args.interval)
-    app.mainloop()
+    if not acquire_single_instance():
+        activate_existing_window()
+        raise SystemExit(0)
+    try:
+        app = UsageWindow(interval=args.interval)
+        app.mainloop()
+    finally:
+        release_single_instance()
