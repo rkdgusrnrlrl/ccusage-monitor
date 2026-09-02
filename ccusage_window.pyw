@@ -16,14 +16,35 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import ttk
 from typing import Any
 
 import ccusage
+import cursor_usage
 
 
-WINDOW_WIDTH = 650
-WINDOW_HEIGHT = 170
+COLUMN_WIDTH = 210
+WINDOW_CHROME_WIDTH = 30
+WINDOW_HEIGHT = 220
+USAGE_SLOT_HEIGHT = 40
+SPACED_GAP_HEIGHT = 20
+SPACED_TITLE_PADY = 10
+GAUGE_HEIGHT = 12
+GAUGE_TROUGH = "#273449"
+GAUGE_MARKER = "#f8fafc"
+GAUGE_MARKER_WIDTH = 2
+PACE_COLORS = {
+    "under": "#94a3b8",
+    "on": "#94a3b8",
+    "over": "#f59e0b",
+    "severe": "#ef4444",
+}
+GAUGE_COLORS = {
+    "Blue": "#38bdf8",
+    "Orange": "#f59e0b",
+    "Red": "#ef4444",
+}
+CURSOR_REFRESH_SECONDS = 30
+CURSOR_GROK_REFRESH_SECONDS = 1
 CODEX_TIMEOUT = 15
 LOG_PATH = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -84,41 +105,8 @@ def find_codex_command() -> str:
     return codex_command
 
 
-def get_commandcode_accounts() -> list[dict[str, str]]:
-    """Load up to two CommandCode accounts without persisting their secrets."""
-    configured_accounts = load_config_accounts()
-    if configured_accounts is not None:
-        return configured_accounts
-
-    configured_accounts = (
-        ("COMMANDCODE_API_KEY_PERSONAL", "COMMANDCODE_USER_ID_PERSONAL"),
-        ("COMMANDCODE_API_KEY_WORK", "COMMANDCODE_USER_ID_WORK"),
-    )
-    has_named_account = any(os.environ.get(key) for key, _ in configured_accounts)
-
-    if has_named_account:
-        accounts: list[dict[str, str]] = []
-        for key_name, id_name in configured_accounts:
-            api_key = os.environ.get(key_name, "").strip()
-            if api_key:
-                accounts.append(
-                    {
-                        "api_key": api_key,
-                        "account_id": os.environ.get(id_name, "").strip() or "unknown",
-                    }
-                )
-        return accounts
-
-    return [
-        {
-            "api_key": ccusage.get_api_key(),
-            "account_id": ccusage.get_local_account_id() or "unknown",
-        }
-    ]
-
-
-def load_config_accounts() -> list[dict[str, str]] | None:
-    """Load account keys from config beside the app or its project folder."""
+def load_app_config() -> dict[str, Any] | None:
+    """Load the local app config beside the executable or project folder."""
     config_path = next(
         (
             path
@@ -137,11 +125,54 @@ def load_config_accounts() -> list[dict[str, str]] | None:
             f"Could not read {config_path.name}: {exc}"
         ) from exc
 
-    accounts = config.get("commandcode_accounts")
-    if not isinstance(accounts, list) or not 1 <= len(accounts) <= 2:
+    if not isinstance(config, dict):
         raise ccusage.CommandCodeError(
-            f"{config_path.name} must contain one or two commandcode_accounts."
+            f"{config_path.name} must contain a JSON object."
         )
+    return config
+
+
+def is_cursor_enabled() -> bool:
+    """Cursor is on by default unless config explicitly disables it."""
+    try:
+        config = load_app_config()
+    except ccusage.CommandCodeError:
+        return True
+    if config is None:
+        return True
+    cursor = config.get("cursor")
+    if cursor is False:
+        return False
+    if isinstance(cursor, dict):
+        return cursor.get("enabled", True) is not False
+    return True
+
+
+def window_width_for_columns(column_count: int) -> int:
+    """Scale the compact window to the number of visible provider columns."""
+    return WINDOW_CHROME_WIDTH + COLUMN_WIDTH * max(1, column_count)
+
+
+def get_commandcode_accounts() -> list[dict[str, str]]:
+    """Load CommandCode accounts from config.json. Missing config or key means none."""
+    return load_config_accounts()
+
+
+def load_config_accounts() -> list[dict[str, str]]:
+    """Load account keys from config beside the app or its project folder."""
+    config = load_app_config()
+    if config is None:
+        return []
+
+    accounts = config.get("commandcode_accounts")
+    if accounts is None:
+        return []
+    if not isinstance(accounts, list) or len(accounts) > 2:
+        raise ccusage.CommandCodeError(
+            "config.json commandcode_accounts must be a list of 0 to 2 accounts."
+        )
+    if not accounts:
+        return []
 
     result: list[dict[str, str]] = []
     for index, account in enumerate(accounts, start=1):
@@ -315,6 +346,68 @@ def normalize_codex_window(window: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class GaugeBar(tk.Canvas):
+    """Fixed-height usage bar. ttk progress bars ignore thickness on Windows."""
+
+    def __init__(self, parent: tk.Widget, height: int, length: int = 80) -> None:
+        super().__init__(
+            parent,
+            height=height,
+            width=length,
+            bg=GAUGE_TROUGH,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._value = 0.0
+        self._color = GAUGE_COLORS["Blue"]
+        self._marker_percent: float | None = None
+        self.bind("<Configure>", lambda _event: self._redraw())
+
+    def set_usage(
+        self,
+        percent: float,
+        color: str,
+        marker_percent: float | None = None,
+    ) -> None:
+        self._value = max(0.0, min(100.0, percent))
+        self._color = GAUGE_COLORS.get(color, GAUGE_COLORS["Blue"])
+        if marker_percent is None:
+            self._marker_percent = None
+        else:
+            self._marker_percent = max(0.0, min(100.0, marker_percent))
+        self._redraw()
+
+    def _redraw(self) -> None:
+        self.delete("fill")
+        self.delete("marker")
+        width = self.winfo_width()
+        height = self.winfo_height()
+        fill_width = width * self._value / 100.0
+        if fill_width > 0:
+            self.create_rectangle(
+                0,
+                0,
+                fill_width,
+                height,
+                fill=self._color,
+                outline="",
+                tags="fill",
+            )
+        if self._marker_percent is None or width <= 1:
+            return
+        marker_x = width * self._marker_percent / 100.0
+        x0 = max(0, min(width - GAUGE_MARKER_WIDTH, round(marker_x) - 1))
+        self.create_rectangle(
+            x0,
+            0,
+            x0 + GAUGE_MARKER_WIDTH,
+            height,
+            fill=GAUGE_MARKER,
+            outline="",
+            tags="marker",
+        )
+
+
 class UsageWindow(tk.Tk):
     """Compact usage dashboard that keeps the UI responsive while polling."""
 
@@ -322,9 +415,22 @@ class UsageWindow(tk.Tk):
         super().__init__()
         self.title("AI Agent Usage")
         self.overrideredirect(True)
-        self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.minsize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.maxsize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.cursor_enabled = is_cursor_enabled()
+        self.commandcode_config_error: str | None = None
+        try:
+            self.commandcode_accounts = get_commandcode_accounts()
+        except ccusage.CommandCodeError as exc:
+            self.commandcode_accounts = []
+            self.commandcode_config_error = str(exc)
+        self.column_count = (
+            1
+            + int(self.cursor_enabled)
+            + len(self.commandcode_accounts)
+        )
+        self.window_width = window_width_for_columns(self.column_count)
+        self.geometry(f"{self.window_width}x{WINDOW_HEIGHT}")
+        self.minsize(self.window_width, WINDOW_HEIGHT)
+        self.maxsize(self.window_width, WINDOW_HEIGHT)
         self.resizable(False, False)
         self.attributes("-topmost", True)
 
@@ -334,6 +440,10 @@ class UsageWindow(tk.Tk):
         self.interval = interval
         self.refresh_ms = interval * 1000
         self.codex_client = CodexRateLimitClient()
+        self.cursor_client = cursor_usage.CursorUsageClient(
+            refresh_seconds=CURSOR_REFRESH_SECONDS,
+            grok_refresh_seconds=CURSOR_GROK_REFRESH_SECONDS,
+        )
         self._drag_x = 0
         self._drag_y = 0
 
@@ -344,22 +454,6 @@ class UsageWindow(tk.Tk):
 
     def _configure_style(self) -> None:
         self.configure(bg="#111827")
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        for name, color in (
-            ("Blue", "#38bdf8"),
-            ("Orange", "#f59e0b"),
-            ("Red", "#ef4444"),
-        ):
-            style.configure(
-                f"Usage.{name}.Horizontal.TProgressbar",
-                troughcolor="#273449",
-                background=color,
-                bordercolor="#273449",
-                lightcolor=color,
-                darkcolor=color,
-                thickness=8,
-            )
 
     def _build_widgets(self) -> None:
         titlebar = tk.Frame(self, bg="#1f2937", height=26)
@@ -421,44 +515,64 @@ class UsageWindow(tk.Tk):
         self.status.pack(side="right")
 
         columns = tk.Frame(self, bg="#111827")
-        columns.pack(fill="both", expand=True, padx=12)
-        columns.columnconfigure(0, weight=1)
-        columns.columnconfigure(1, weight=1)
-        columns.columnconfigure(2, weight=1)
-
-        codex_column = tk.Frame(columns, bg="#111827")
-        codex_column.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self.codex_title = self._add_column_title(codex_column, "Codex")
-        self.commandcode_columns: list[tk.Frame] = []
-        self.commandcode_titles: list[tk.Label] = []
-        for index in range(2):
-            commandcode_column = tk.Frame(columns, bg="#111827")
-            commandcode_column.grid(
-                row=0,
-                column=index + 1,
-                sticky="nsew",
-                padx=(8, 0),
-            )
-            self.commandcode_columns.append(commandcode_column)
-            self.commandcode_titles.append(
-                self._add_column_title(commandcode_column, "CommandCode")
-            )
+        columns.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        for index in range(self.column_count):
+            columns.columnconfigure(index, weight=1, uniform="col")
+        columns.rowconfigure(0, weight=1)
 
         self.rows: dict[str, dict[str, tk.Widget]] = {}
-        self._add_usage_row(codex_column, "codexPrimary", "5h")
-        self._add_usage_row(codex_column, "codexWeekly", "7d")
-        for index, commandcode_column in enumerate(self.commandcode_columns):
+        column_index = 0
+        self.codex_title, codex_body = self._add_provider_column(
+            columns,
+            column_index,
+            "Codex",
+            self._column_padx(column_index),
+            title_pady=SPACED_TITLE_PADY,
+        )
+        self._configure_row_slots(codex_body, gap=SPACED_GAP_HEIGHT)
+        self._add_usage_row(self._row_slot(codex_body, 0), "codexPrimary", "5h")
+        self._row_slot(codex_body, 1)
+        self._add_usage_row(self._row_slot(codex_body, 2), "codexWeekly", "7d")
+        column_index += 1
+
+        self.cursor_title: tk.Label | None = None
+        if self.cursor_enabled:
+            self.cursor_title, cursor_body = self._add_provider_column(
+                columns, column_index, "Cursor", self._column_padx(column_index)
+            )
+            self._configure_row_slots(cursor_body)
+            self._add_usage_row(self._row_slot(cursor_body, 0), "cursorModels", "cur")
+            self._add_usage_row(
+                self._row_slot(cursor_body, 1), "cursorOtherModels", "api"
+            )
+            self._add_usage_row(self._row_slot(cursor_body, 2), "cursorGrokBot", "bot")
+            column_index += 1
+
+        self.commandcode_titles: list[tk.Label] = []
+        for index, account in enumerate(self.commandcode_accounts):
             account_number = index + 1
-            self._add_usage_row(
-                commandcode_column,
-                f"commandcode{account_number}FiveHour",
-                "5h",
+            title, body = self._add_provider_column(
+                columns,
+                column_index,
+                format_commandcode_title(account["account_id"]),
+                self._column_padx(column_index),
+                title_pady=SPACED_TITLE_PADY,
             )
+            self.commandcode_titles.append(title)
+            self._configure_row_slots(body, gap=SPACED_GAP_HEIGHT)
             self._add_usage_row(
-                commandcode_column,
-                f"commandcode{account_number}Weekly",
-                "7d",
+                self._row_slot(body, 0), f"commandcode{account_number}FiveHour", "5h"
             )
+            self._row_slot(body, 1)
+            self._add_usage_row(
+                self._row_slot(body, 2), f"commandcode{account_number}Weekly", "7d"
+            )
+            column_index += 1
+
+    def _column_padx(self, index: int) -> tuple[int, int]:
+        left = 0 if index == 0 else 8
+        right = 0 if index == self.column_count - 1 else 8
+        return (left, right)
 
     def _start_move(self, event: tk.Event) -> None:
         self._drag_x = event.x_root - self.winfo_x()
@@ -467,21 +581,60 @@ class UsageWindow(tk.Tk):
     def _move_window(self, event: tk.Event) -> None:
         self.geometry(f"+{event.x_root - self._drag_x}+{event.y_root - self._drag_y}")
 
-    def _add_column_title(self, parent: tk.Widget, text: str) -> tk.Label:
+    def _add_provider_column(
+        self,
+        parent: tk.Widget,
+        column: int,
+        text: str,
+        padx: tuple[int, int],
+        *,
+        title_pady: int = 2,
+    ) -> tuple[tk.Label, tk.Frame]:
+        column_frame = tk.Frame(parent, bg="#111827")
+        column_frame.grid(row=0, column=column, sticky="nsew", padx=padx)
         title = tk.Label(
-            parent,
+            column_frame,
             text=text,
             bg="#111827",
             fg="#e2e8f0",
             font=("Segoe UI", 9, "bold"),
             anchor="w",
         )
-        title.pack(fill="x", pady=(0, 2))
-        return title
+        title.pack(fill="x", pady=(0, title_pady))
+        body = tk.Frame(column_frame, bg="#111827")
+        body.pack(fill="both", expand=True)
+        return title, body
 
-    def _add_usage_row(self, parent: tk.Widget, key: str, label: str) -> None:
+    def _configure_row_slots(
+        self,
+        body: tk.Frame,
+        *,
+        gap: int | None = None,
+    ) -> None:
+        body.columnconfigure(0, weight=1)
+        heights = (
+            USAGE_SLOT_HEIGHT,
+            USAGE_SLOT_HEIGHT if gap is None else gap,
+            USAGE_SLOT_HEIGHT,
+        )
+        for index, height in enumerate(heights):
+            body.rowconfigure(index, weight=0, minsize=height)
+
+    def _row_slot(self, body: tk.Frame, index: int) -> tk.Frame:
+        cell = tk.Frame(body, bg="#111827")
+        cell.grid(row=index, column=0, sticky="nsew")
+        return cell
+
+    def _add_usage_row(
+        self,
+        parent: tk.Widget,
+        key: str,
+        label: str,
+        *,
+        bar_length: int = 80,
+    ) -> None:
         row = tk.Frame(parent, bg="#111827")
-        row.pack(fill="x", pady=1)
+        row.pack(fill="both", expand=True, pady=0)
 
         name = tk.Label(
             row,
@@ -492,14 +645,9 @@ class UsageWindow(tk.Tk):
             font=("Segoe UI", 9, "bold"),
             anchor="w",
         )
-        name.grid(row=0, column=0, rowspan=2, sticky="w")
+        name.grid(row=0, column=0, rowspan=2, sticky="nsw")
 
-        bar = ttk.Progressbar(
-            row,
-            style="Usage.Blue.Horizontal.TProgressbar",
-            maximum=100,
-            length=80,
-        )
+        bar = GaugeBar(row, height=GAUGE_HEIGHT, length=bar_length)
         bar.grid(row=0, column=1, sticky="ew", padx=(0, 4))
 
         percent = tk.Label(
@@ -536,11 +684,14 @@ class UsageWindow(tk.Tk):
 
     def _fetch_usage(self) -> None:
         commandcode_accounts: list[tuple[dict[str, str], dict[str, Any] | None]] = []
+        cursor_data: dict[str, Any] | None = None
         codex_data: dict[str, Any] | None = None
         errors: list[str] = []
 
-        try:
-            for account in get_commandcode_accounts():
+        if self.commandcode_config_error:
+            errors.append(f"CommandCode: {self.commandcode_config_error}")
+        else:
+            for account in self.commandcode_accounts:
                 try:
                     data = ccusage.api_get(
                         ccusage.CREDITS_ENDPOINT,
@@ -550,15 +701,21 @@ class UsageWindow(tk.Tk):
                 except Exception as exc:
                     commandcode_accounts.append((account, None))
                     errors.append(f"CommandCode: {exc}")
-        except Exception as exc:  # The message is shown in the small status area.
-            errors.append(f"CommandCode: {exc}")
+
+        if self.cursor_enabled:
+            try:
+                cursor_data = self.cursor_client.read_usage()
+            except Exception as exc:  # The message is shown in the small status area.
+                errors.append(f"Cursor: {exc}")
 
         try:
             codex_data = self.codex_client.read_rate_limits()
         except Exception as exc:  # The message is shown in the small status area.
             errors.append(f"Codex: {exc}")
 
-        self.result_queue.put(("data", (commandcode_accounts, codex_data, errors)))
+        self.result_queue.put(
+            ("data", (commandcode_accounts, cursor_data, codex_data, errors))
+        )
 
     def _close(self) -> None:
         if self.after_id is not None:
@@ -576,8 +733,8 @@ class UsageWindow(tk.Tk):
 
         self.refresh_pending = False
         if kind == "data":
-            commandcode_accounts, codex_data, errors = value
-            self._update_usage(commandcode_accounts, codex_data, errors)
+            commandcode_accounts, cursor_data, codex_data, errors = value
+            self._update_usage(commandcode_accounts, cursor_data, codex_data, errors)
         else:
             self.status.configure(
                 text=f"Updated: failed - {value}",
@@ -587,14 +744,16 @@ class UsageWindow(tk.Tk):
     def _update_usage(
         self,
         commandcode_accounts: list[tuple[dict[str, str], dict[str, Any] | None]],
+        cursor_data: dict[str, Any] | None,
         codex_data: dict[str, Any] | None,
         errors: list[str],
     ) -> None:
-        if not commandcode_accounts:
-            self.header.configure(text="Usage unavailable")
-        else:
+        if commandcode_accounts or cursor_data or codex_data:
             self.header.configure(text="Usage")
+        else:
+            self.header.configure(text="Usage unavailable")
         self._update_commandcode_usage(commandcode_accounts)
+        self._update_cursor_usage(cursor_data)
 
         if codex_data is None:
             self._clear_row(self.rows["codexPrimary"])
@@ -614,21 +773,19 @@ class UsageWindow(tk.Tk):
         self,
         accounts: list[tuple[dict[str, str], dict[str, Any] | None]],
     ) -> None:
-        for index in range(2):
+        for index, title in enumerate(self.commandcode_titles):
             account_number = index + 1
             five_hour_row = self.rows[f"commandcode{account_number}FiveHour"]
             weekly_row = self.rows[f"commandcode{account_number}Weekly"]
 
             if index >= len(accounts):
-                self.commandcode_titles[index].configure(text="CommandCode (not configured)")
+                title.configure(text="CommandCode")
                 self._clear_row(five_hour_row)
                 self._clear_row(weekly_row)
                 continue
 
             account, data = accounts[index]
-            self.commandcode_titles[index].configure(
-                text=format_commandcode_title(account["account_id"])
-            )
+            title.configure(text=format_commandcode_title(account["account_id"]))
             limits = (data or {}).get("windowLimits") or {}
             for row, key in ((five_hour_row, "fiveHour"), (weekly_row, "weekly")):
                 window = limits.get(key)
@@ -637,36 +794,107 @@ class UsageWindow(tk.Tk):
                 else:
                     self._clear_row(row)
 
+    def _update_cursor_usage(self, cursor_data: dict[str, Any] | None) -> None:
+        if not self.cursor_enabled or self.cursor_title is None:
+            return
+        if cursor_data is None:
+            self.cursor_title.configure(text="Cursor")
+            self._clear_row(self.rows["cursorModels"])
+            self._clear_row(self.rows["cursorOtherModels"])
+            self._clear_row(self.rows["cursorGrokBot"])
+            return
+
+        self.cursor_title.configure(text="Cursor")
+        monthly_pools = (
+            ("cursorModels", "cursorModels"),
+            ("otherModels", "cursorOtherModels"),
+        )
+        for pool_key, row_key in monthly_pools:
+            pool = cursor_data.get(pool_key)
+            if isinstance(pool, dict):
+                self._update_row(self.rows[row_key], pool, pace=_cursor_monthly_pace(pool))
+            else:
+                self._clear_row(self.rows[row_key])
+
+        grok_bot = cursor_data.get("grokBot")
+        if isinstance(grok_bot, dict):
+            self._update_row(self.rows["cursorGrokBot"], grok_bot)
+        else:
+            self._clear_row(self.rows["cursorGrokBot"])
+
     @staticmethod
-    def _update_row(row: dict[str, tk.Widget], window: dict[str, Any]) -> None:
+    def _update_row(
+        row: dict[str, tk.Widget],
+        window: dict[str, Any],
+        *,
+        compact: bool = False,
+        pace: dict[str, Any] | None = None,
+    ) -> None:
         pct = ccusage.percent(window.get("used"), window.get("cap"))
         bar = row["bar"]
         percent = row["percent"]
-        detail = row["detail"]
-        assert isinstance(bar, ttk.Progressbar)
+        detail = row.get("detail")
+        assert isinstance(bar, GaugeBar)
         assert isinstance(percent, tk.Label)
-        assert isinstance(detail, tk.Label)
 
-        bar.configure(value=max(0, min(100, pct)))
         color = "Red" if pct >= 95 else "Orange" if pct >= 80 else "Blue"
-        bar.configure(style=f"Usage.{color}.Horizontal.TProgressbar")
-        percent.configure(text=f"{pct:.1f}%", fg="#fca5a5" if pct >= 90 else "#f8fafc")
+        marker_percent = pace.get("expectedPercent") if pace else None
+        bar.set_usage(max(0, min(100, pct)), color, marker_percent=marker_percent)
+        percent.configure(
+            text=f"{pct:.0f}%" if compact else f"{pct:.1f}%",
+            fg="#fca5a5" if pct >= 90 else "#f8fafc",
+        )
+        if not isinstance(detail, tk.Label):
+            return
+        prefix = window.get("prefix", "")
+        if not isinstance(prefix, str):
+            prefix = ""
+        if compact:
+            detail.configure(
+                text=(
+                    f"{prefix}{ccusage.format_number(window.get('used'))}/"
+                    f"{prefix}{ccusage.format_number(window.get('cap'))}"
+                ),
+                fg="#94a3b8",
+            )
+            return
+        reset_text = ccusage.format_reset(window.get("resetAt")).split(" (", 1)[0]
+        if pace is not None:
+            delta = round(float(pace.get("deltaPoints", 0)))
+            status = pace.get("status")
+            detail.configure(
+                text=f"pace {delta:+d}p · reset {reset_text}",
+                fg=PACE_COLORS.get(status, PACE_COLORS["on"]),
+            )
+            return
         detail.configure(
             text=(
-                f"{ccusage.format_number(window.get('used'))} / "
-                f"{ccusage.format_number(window.get('cap'))}   "
-                f"reset {ccusage.format_reset(window.get('resetAt')).split(' (', 1)[0]}"
+                f"{prefix}{ccusage.format_number(window.get('used'))} / "
+                f"{prefix}{ccusage.format_number(window.get('cap'))}   "
+                f"reset {reset_text}"
             ),
             fg="#94a3b8",
         )
 
     @staticmethod
-    def _clear_row(row: dict[str, tk.Widget]) -> None:
+    def _clear_row(row: dict[str, tk.Widget], detail: str = "Not available") -> None:
         bar = row["bar"]
-        assert isinstance(bar, ttk.Progressbar)
-        bar.configure(value=0, style="Usage.Blue.Horizontal.TProgressbar")
-        row["percent"].configure(text="--.-%", fg="#64748b")
-        row["detail"].configure(text="Not available", fg="#64748b")
+        assert isinstance(bar, GaugeBar)
+        thin = "detail" not in row
+        bar.set_usage(0, "Blue")
+        row["percent"].configure(text="--%" if thin else "--.-%", fg="#64748b")
+        detail_label = row.get("detail")
+        if isinstance(detail_label, tk.Label):
+            detail_label.configure(text=detail, fg="#64748b")
+
+
+def _cursor_monthly_pace(window: dict[str, Any]) -> dict[str, Any] | None:
+    pct = ccusage.percent(window.get("used"), window.get("cap"))
+    return ccusage.monthly_pace(
+        pct,
+        window.get("periodStart"),
+        window.get("periodEnd"),
+    )
 
 
 def parse_args() -> argparse.Namespace:
