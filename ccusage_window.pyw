@@ -47,6 +47,8 @@ GAUGE_COLORS = {
 }
 APP_TITLE = "AI Agent Usage"
 SINGLE_INSTANCE_MUTEX = "Local\\ccusage-monitor-single-instance"
+MONITOR_DEFAULTTONULL = 0
+SPI_GETWORKAREA = 48
 CURSOR_REFRESH_SECONDS = 30
 CURSOR_GROK_REFRESH_SECONDS = 1
 CODEX_TIMEOUT = 15
@@ -64,6 +66,17 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("ccusage-monitor")
 _single_instance_handle: int | None = None
+
+
+class WindowRect(ctypes.Structure):
+    """Win32 window or work-area rectangle."""
+
+    _fields_ = (
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
+    )
 
 
 def acquire_single_instance() -> bool:
@@ -119,6 +132,56 @@ def activate_existing_window() -> None:
         return
 
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
+    user32.MonitorFromWindow.restype = ctypes.c_void_p
+    if not user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL):
+        window_rect = WindowRect()
+        work_area = WindowRect()
+        user32.GetWindowRect.argtypes = (
+            wintypes.HWND,
+            ctypes.POINTER(WindowRect),
+        )
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.SystemParametersInfoW.argtypes = (
+            wintypes.UINT,
+            wintypes.UINT,
+            wintypes.LPVOID,
+            wintypes.UINT,
+        )
+        user32.SystemParametersInfoW.restype = wintypes.BOOL
+        user32.MoveWindow.argtypes = (
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.BOOL,
+        )
+        user32.MoveWindow.restype = wintypes.BOOL
+
+        has_window_rect = user32.GetWindowRect(hwnd, ctypes.byref(window_rect))
+        has_work_area = user32.SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            ctypes.byref(work_area),
+            0,
+        )
+        if has_window_rect and has_work_area:
+            width = window_rect.right - window_rect.left
+            height = window_rect.bottom - window_rect.top
+            x = work_area.left + max(
+                ((work_area.right - work_area.left) - width) // 2,
+                0,
+            )
+            y = work_area.top + max(
+                ((work_area.bottom - work_area.top) - height) // 2,
+                0,
+            )
+            if not user32.MoveWindow(hwnd, x, y, width, height, True):
+                LOGGER.warning("Could not move off-screen window to primary display")
+        else:
+            LOGGER.warning("Could not determine window or primary display bounds")
+
     user32.BringWindowToTop(hwnd)
     user32.SetForegroundWindow(hwnd)
 
