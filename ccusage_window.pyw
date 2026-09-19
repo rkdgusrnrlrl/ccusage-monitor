@@ -48,6 +48,8 @@ CURSOR_REFRESH_SECONDS = 30
 CURSOR_GROK_REFRESH_SECONDS = 1
 CLAUDE_REFRESH_SECONDS = 30
 CODEX_TIMEOUT = 15
+# A hung app-server must not hold the window back at startup.
+CODEX_PROBE_TIMEOUT = 5
 LOG_PATH = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     / "ccusage-monitor"
@@ -224,7 +226,7 @@ class CodexRateLimitClient:
         self.lock = threading.Lock()
         self.next_request_id = 1
 
-    def _start(self) -> None:
+    def _start(self, timeout: float | None = None) -> None:
         codex_command = find_codex_command()
         LOGGER.info("Starting Codex app-server: %s", codex_command)
         self.process = subprocess.Popen(
@@ -257,7 +259,7 @@ class CodexRateLimitClient:
                 },
             }
         )
-        self._wait_for(self.next_request_id - 1)
+        self._wait_for(self.next_request_id - 1, timeout)
         self._send({"method": "initialized"})
 
     def _request_id(self) -> int:
@@ -271,8 +273,12 @@ class CodexRateLimitClient:
         self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
 
-    def _wait_for(self, response_id: int) -> dict[str, Any]:
-        deadline = time.monotonic() + CODEX_TIMEOUT
+    def _wait_for(
+        self,
+        response_id: int,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + (CODEX_TIMEOUT if timeout is None else timeout)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -290,16 +296,16 @@ class CodexRateLimitClient:
                     raise RuntimeError(str(response["error"]))
                 return response
 
-    def read_rate_limits(self) -> dict[str, Any]:
+    def read_rate_limits(self, timeout: float | None = None) -> dict[str, Any]:
         with self.lock:
             try:
                 if self.process is None or self.process.poll() is not None:
                     self._close_process()
-                    self._start()
+                    self._start(timeout)
 
                 request_id = self._request_id()
                 self._send({"id": request_id, "method": "account/rateLimits/read"})
-                response = self._wait_for(request_id)
+                response = self._wait_for(request_id, timeout)
                 rate_limits = response.get("result", {}).get("rateLimits") or {}
                 primary = rate_limits.get("primary")
                 secondary = rate_limits.get("secondary")
@@ -427,6 +433,9 @@ class UsageWindow(tk.Tk):
         super().__init__()
         self.title("AI Agent Usage")
         self.overrideredirect(True)
+        self.codex_client = CodexRateLimitClient()
+        self.codex_initial = self._probe_codex()
+        self.codex_enabled = self.codex_initial is not None
         self.claude_enabled = is_claude_enabled()
         self.cursor_enabled = is_cursor_enabled()
         self.commandcode_config_error: str | None = None
@@ -436,7 +445,7 @@ class UsageWindow(tk.Tk):
             self.commandcode_accounts = []
             self.commandcode_config_error = str(exc)
         self.column_count = (
-            1
+            int(self.codex_enabled)
             + int(self.claude_enabled)
             + int(self.cursor_enabled)
             + len(self.commandcode_accounts)
@@ -453,7 +462,6 @@ class UsageWindow(tk.Tk):
         self.after_id: str | None = None
         self.interval = interval
         self.refresh_ms = interval * 1000
-        self.codex_client = CodexRateLimitClient()
         self.claude_client = claude_usage.ClaudeUsageClient(
             refresh_seconds=CLAUDE_REFRESH_SECONDS,
         )
@@ -468,6 +476,15 @@ class UsageWindow(tk.Tk):
         self._build_widgets()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.after_id = self.after(100, self.refresh)
+
+    def _probe_codex(self) -> dict[str, Any] | None:
+        """Read Codex once at startup so a silent Codex hides its column."""
+        try:
+            return self.codex_client.read_rate_limits(timeout=CODEX_PROBE_TIMEOUT)
+        except Exception:
+            LOGGER.info("Codex usage unavailable at startup; hiding the column")
+            self.codex_client.close()
+            return None
 
     def _configure_style(self) -> None:
         self.configure(bg="#111827")
@@ -539,18 +556,20 @@ class UsageWindow(tk.Tk):
 
         self.rows: dict[str, dict[str, tk.Widget]] = {}
         column_index = 0
-        self.codex_title, codex_body = self._add_provider_column(
-            columns,
-            column_index,
-            "Codex",
-            self._column_padx(column_index),
-            title_pady=SPACED_TITLE_PADY,
-        )
-        self._configure_row_slots(codex_body, gap=SPACED_GAP_HEIGHT)
-        self._add_usage_row(self._row_slot(codex_body, 0), "codexPrimary", "5h")
-        self._row_slot(codex_body, 1)
-        self._add_usage_row(self._row_slot(codex_body, 2), "codexWeekly", "7d")
-        column_index += 1
+        self.codex_title: tk.Label | None = None
+        if self.codex_enabled:
+            self.codex_title, codex_body = self._add_provider_column(
+                columns,
+                column_index,
+                "Codex",
+                self._column_padx(column_index),
+                title_pady=SPACED_TITLE_PADY,
+            )
+            self._configure_row_slots(codex_body, gap=SPACED_GAP_HEIGHT)
+            self._add_usage_row(self._row_slot(codex_body, 0), "codexPrimary", "5h")
+            self._row_slot(codex_body, 1)
+            self._add_usage_row(self._row_slot(codex_body, 2), "codexWeekly", "7d")
+            column_index += 1
 
         self.claude_title: tk.Label | None = None
         if self.claude_enabled:
@@ -747,10 +766,15 @@ class UsageWindow(tk.Tk):
             except Exception as exc:  # The message is shown in the small status area.
                 errors.append(f"Cursor: {exc}")
 
-        try:
-            codex_data = self.codex_client.read_rate_limits()
-        except Exception as exc:  # The message is shown in the small status area.
-            errors.append(f"Codex: {exc}")
+        if self.codex_enabled:
+            if self.codex_initial is not None:
+                codex_data = self.codex_initial
+                self.codex_initial = None
+            else:
+                try:
+                    codex_data = self.codex_client.read_rate_limits()
+                except Exception as exc:  # Shown in the small status area.
+                    errors.append(f"Codex: {exc}")
 
         self.result_queue.put(
             (
@@ -811,12 +835,13 @@ class UsageWindow(tk.Tk):
         self._update_claude_usage(claude_data)
         self._update_cursor_usage(cursor_data)
 
-        if codex_data is None:
-            self._clear_row(self.rows["codexPrimary"])
-            self._clear_row(self.rows["codexWeekly"])
-        else:
-            self._update_row(self.rows["codexPrimary"], codex_data["primary"])
-            self._update_row(self.rows["codexWeekly"], codex_data["secondary"])
+        if self.codex_enabled:
+            if codex_data is None:
+                self._clear_row(self.rows["codexPrimary"])
+                self._clear_row(self.rows["codexWeekly"])
+            else:
+                self._update_row(self.rows["codexPrimary"], codex_data["primary"])
+                self._update_row(self.rows["codexWeekly"], codex_data["secondary"])
 
         status = f"Updated: {datetime.now():%H:%M:%S}"
         if errors:

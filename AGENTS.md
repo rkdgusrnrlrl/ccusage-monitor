@@ -3,7 +3,7 @@
 ## 제품 범위와 UI
 
 - 이 프로젝트는 Codex, Claude, Cursor, CommandCode 사용량을 작은 항상 위 Windows 창에서 보여주는 도구다.
-- 화면은 설정에 따라 `Codex | Claude | Cursor | CommandCode 계정…`을 가로로 이어 붙인다. Codex 열은 항상 있다. Claude 열은 `claude.enabled`가 `false`가 아니면 표시한다. Cursor 열은 `cursor.enabled`가 `false`가 아니면 표시한다. CommandCode 열은 `config.json`의 `commandcode_accounts` 개수만큼만 표시한다(0~2).
+- 화면은 설정에 따라 `Codex | Claude | Cursor | CommandCode 계정…`을 가로로 이어 붙인다. Codex 열은 시작할 때 사용량을 한 번 읽어 값이 나왔을 때만 만든다. Claude 열은 `claude.enabled`가 `false`가 아니면 표시한다. Cursor 열은 `cursor.enabled`가 `false`가 아니면 표시한다. CommandCode 열은 `config.json`의 `commandcode_accounts` 개수만큼만 표시한다(0~2).
 - `config.json`이 없거나 `commandcode_accounts`가 없으면 CommandCode 열을 만들지 않는다. 계정이 하나면 한 열만 만든다.
 - 창 너비는 보이는 열 수에 비례한다. 열 하나당 210px에 크롬 30px를 더한다(4열일 때 기존 870px).
 - 각 열은 같은 높이의 3행 자리를 쓴다. Codex, Claude, CommandCode는 제목과 `5h` 사이에 약간의 여백을 두고, `5h`와 `7d` 사이 여백은 Cursor 한 행 높이의 절반이다. Cursor는 `cur`, `api`, `bot`을 여백 없이 붙여 넣는다.
@@ -25,6 +25,9 @@
 ## Codex 사용량 연동
 
 - Codex 사용량은 현재 로그인된 로컬 Codex CLI의 app-server로 읽는다. 인증 토큰을 복사·파싱·로그·저장하지 않는다.
+- 창은 시작할 때 Codex를 한 번 읽어(`_probe_codex`) 실패하면 Codex 열을 만들지 않고 창 너비도 줄인다. 이 판단은 시작 때 한 번만 하고, 실행 중에 열을 넣거나 빼지 않는다.
+- 시작 조회는 `CODEX_PROBE_TIMEOUT`을 쓴다. app-server가 멈춰도 창이 그만큼만 기다리게 한다. 이 값을 기본 `CODEX_TIMEOUT`으로 되돌리지 않는다.
+- 시작 조회에 성공하면 그 값을 첫 화면에 그대로 쓴다. 같은 값을 곧바로 다시 요청하지 않는다.
 - `CodexRateLimitClient` app-server 프로세스는 갱신마다 새로 만들지 말고 계속 재사용한다. 실제 요청 또는 프로세스 실패 때만 재시작한다.
 - Windows에서는 실패 복구 또는 앱 종료 때만 Codex 프로세스 트리 전체를 종료한다. 갱신마다 `codex`를 실행하는 구조로 되돌리지 않는다.
 - `codex app-server`와 `taskkill`을 포함한 모든 보조 프로세스는 Windows 숨김 실행 옵션을 사용해야 한다. 재연결 중 콘솔 창이 나타나면 안 된다.

@@ -7,6 +7,7 @@ CommandCode, Codex, Claude, Cursor의 사용량을 작은 Windows 창에서 함�
 - 항상 위에 표시되는 가로형 컴팩트 창
 - Codex·Claude·CommandCode는 5시간 / 7일 사용량을 위·아래에 두고 가운데는 비운다
 - Claude는 구독 플랜의 5시간 / 7일 한도 소진율을 표시하고, 제목에 플랜 이름을 붙인다
+- Codex 열은 시작할 때 사용량을 한 번 읽어 값이 나오지 않으면 열을 만들지 않고, 창 너비도 함께 줄어든다
 - CommandCode 열은 `config.json`의 `commandcode_accounts` 개수만큼만 나오고, 창 너비도 열 수에 맞춰 줄어든다
 - Cursor는 월간 `cur`(Cursor Models) / `api`(Other Models)와 주간 `bot`(Grok Bot)을 붙여서 표시
 - Cursor 월간 막대의 세로 눈금은 이번 주 일요일까지 월간 예산 중 써도 되는 한도다. 채움이 눈금보다 왼쪽이면 일요일까지 여유가 있고, 오른쪽이면 이번 주 한도를 넘긴 것이다
@@ -70,7 +71,7 @@ $env:COMMANDCODE_API_KEY = "your-commandcode-api-key"
 
 `id`는 화면의 `CommandCode(id)` 제목에만 쓰이며, 계정 구분용 별칭을 넣어도 된다. `commandcode_accounts`를 빼거나 빈 배열로 두면 CommandCode 열은 나오지 않는다. `config.json`은 `.gitignore`에 포함되어 GitHub에 올라가지 않는다. Claude 열을 끄려면 `"claude": { "enabled": false }`를, Cursor 열을 끄려면 `"cursor": { "enabled": false }`를 넣는다. Cursor를 끄거나 CommandCode 계정 수가 바뀌면 창 너비도 함께 바뀐다.
 
-Codex 사용량은 별도 토큰을 저장하지 않고, 현재 로그인된 Codex CLI의 로컬 app-server 인터페이스를 사용한다.
+Codex 사용량은 별도 토큰을 저장하지 않고, 현재 로그인된 Codex CLI의 로컬 app-server 인터페이스를 사용한다. 시작할 때 한 번 읽어 값이 나오지 않으면 Codex 열을 감춘다. 로그인 뒤에 다시 보려면 창을 다시 실행한다.
 
 ```powershell
 codex login
