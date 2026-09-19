@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import ccusage
+import claude_usage
 import cursor_usage
 
 
@@ -45,6 +46,7 @@ GAUGE_COLORS = {
 }
 CURSOR_REFRESH_SECONDS = 30
 CURSOR_GROK_REFRESH_SECONDS = 1
+CLAUDE_REFRESH_SECONDS = 30
 CODEX_TIMEOUT = 15
 LOG_PATH = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -132,20 +134,30 @@ def load_app_config() -> dict[str, Any] | None:
     return config
 
 
-def is_cursor_enabled() -> bool:
-    """Cursor is on by default unless config explicitly disables it."""
+def _is_provider_enabled(key: str) -> bool:
+    """A provider stays on unless config.json turns it off."""
     try:
         config = load_app_config()
     except ccusage.CommandCodeError:
         return True
     if config is None:
         return True
-    cursor = config.get("cursor")
-    if cursor is False:
+    provider = config.get(key)
+    if provider is False:
         return False
-    if isinstance(cursor, dict):
-        return cursor.get("enabled", True) is not False
+    if isinstance(provider, dict):
+        return provider.get("enabled", True) is not False
     return True
+
+
+def is_cursor_enabled() -> bool:
+    """Cursor is on by default unless config explicitly disables it."""
+    return _is_provider_enabled("cursor")
+
+
+def is_claude_enabled() -> bool:
+    """Claude is on by default unless config explicitly disables it."""
+    return _is_provider_enabled("claude")
 
 
 def window_width_for_columns(column_count: int) -> int:
@@ -415,6 +427,7 @@ class UsageWindow(tk.Tk):
         super().__init__()
         self.title("AI Agent Usage")
         self.overrideredirect(True)
+        self.claude_enabled = is_claude_enabled()
         self.cursor_enabled = is_cursor_enabled()
         self.commandcode_config_error: str | None = None
         try:
@@ -424,6 +437,7 @@ class UsageWindow(tk.Tk):
             self.commandcode_config_error = str(exc)
         self.column_count = (
             1
+            + int(self.claude_enabled)
             + int(self.cursor_enabled)
             + len(self.commandcode_accounts)
         )
@@ -440,6 +454,9 @@ class UsageWindow(tk.Tk):
         self.interval = interval
         self.refresh_ms = interval * 1000
         self.codex_client = CodexRateLimitClient()
+        self.claude_client = claude_usage.ClaudeUsageClient(
+            refresh_seconds=CLAUDE_REFRESH_SECONDS,
+        )
         self.cursor_client = cursor_usage.CursorUsageClient(
             refresh_seconds=CURSOR_REFRESH_SECONDS,
             grok_refresh_seconds=CURSOR_GROK_REFRESH_SECONDS,
@@ -534,6 +551,21 @@ class UsageWindow(tk.Tk):
         self._row_slot(codex_body, 1)
         self._add_usage_row(self._row_slot(codex_body, 2), "codexWeekly", "7d")
         column_index += 1
+
+        self.claude_title: tk.Label | None = None
+        if self.claude_enabled:
+            self.claude_title, claude_body = self._add_provider_column(
+                columns,
+                column_index,
+                "Claude",
+                self._column_padx(column_index),
+                title_pady=SPACED_TITLE_PADY,
+            )
+            self._configure_row_slots(claude_body, gap=SPACED_GAP_HEIGHT)
+            self._add_usage_row(self._row_slot(claude_body, 0), "claudeFiveHour", "5h")
+            self._row_slot(claude_body, 1)
+            self._add_usage_row(self._row_slot(claude_body, 2), "claudeWeekly", "7d")
+            column_index += 1
 
         self.cursor_title: tk.Label | None = None
         if self.cursor_enabled:
@@ -685,6 +717,7 @@ class UsageWindow(tk.Tk):
     def _fetch_usage(self) -> None:
         commandcode_accounts: list[tuple[dict[str, str], dict[str, Any] | None]] = []
         cursor_data: dict[str, Any] | None = None
+        claude_data: dict[str, Any] | None = None
         codex_data: dict[str, Any] | None = None
         errors: list[str] = []
 
@@ -702,6 +735,12 @@ class UsageWindow(tk.Tk):
                     commandcode_accounts.append((account, None))
                     errors.append(f"CommandCode: {exc}")
 
+        if self.claude_enabled:
+            try:
+                claude_data = self.claude_client.read_usage()
+            except Exception as exc:  # The message is shown in the small status area.
+                errors.append(f"Claude: {exc}")
+
         if self.cursor_enabled:
             try:
                 cursor_data = self.cursor_client.read_usage()
@@ -714,7 +753,10 @@ class UsageWindow(tk.Tk):
             errors.append(f"Codex: {exc}")
 
         self.result_queue.put(
-            ("data", (commandcode_accounts, cursor_data, codex_data, errors))
+            (
+                "data",
+                (commandcode_accounts, claude_data, cursor_data, codex_data, errors),
+            )
         )
 
     def _close(self) -> None:
@@ -733,8 +775,20 @@ class UsageWindow(tk.Tk):
 
         self.refresh_pending = False
         if kind == "data":
-            commandcode_accounts, cursor_data, codex_data, errors = value
-            self._update_usage(commandcode_accounts, cursor_data, codex_data, errors)
+            (
+                commandcode_accounts,
+                claude_data,
+                cursor_data,
+                codex_data,
+                errors,
+            ) = value
+            self._update_usage(
+                commandcode_accounts,
+                claude_data,
+                cursor_data,
+                codex_data,
+                errors,
+            )
         else:
             self.status.configure(
                 text=f"Updated: failed - {value}",
@@ -744,15 +798,17 @@ class UsageWindow(tk.Tk):
     def _update_usage(
         self,
         commandcode_accounts: list[tuple[dict[str, str], dict[str, Any] | None]],
+        claude_data: dict[str, Any] | None,
         cursor_data: dict[str, Any] | None,
         codex_data: dict[str, Any] | None,
         errors: list[str],
     ) -> None:
-        if commandcode_accounts or cursor_data or codex_data:
+        if commandcode_accounts or claude_data or cursor_data or codex_data:
             self.header.configure(text="Usage")
         else:
             self.header.configure(text="Usage unavailable")
         self._update_commandcode_usage(commandcode_accounts)
+        self._update_claude_usage(claude_data)
         self._update_cursor_usage(cursor_data)
 
         if codex_data is None:
@@ -794,6 +850,29 @@ class UsageWindow(tk.Tk):
                 else:
                     self._clear_row(row)
 
+    def _update_claude_usage(self, claude_data: dict[str, Any] | None) -> None:
+        if not self.claude_enabled or self.claude_title is None:
+            return
+        if claude_data is None:
+            self.claude_title.configure(text="Claude")
+            self._clear_row(self.rows["claudeFiveHour"])
+            self._clear_row(self.rows["claudeWeekly"])
+            return
+
+        self.claude_title.configure(
+            text=claude_usage.format_claude_title(claude_data.get("subscription"))
+        )
+        windows = (
+            ("fiveHour", "claudeFiveHour"),
+            ("sevenDay", "claudeWeekly"),
+        )
+        for window_key, row_key in windows:
+            window = claude_data.get(window_key)
+            if isinstance(window, dict):
+                self._update_row(self.rows[row_key], window, reset_only=True)
+            else:
+                self._clear_row(self.rows[row_key])
+
     def _update_cursor_usage(self, cursor_data: dict[str, Any] | None) -> None:
         if not self.cursor_enabled or self.cursor_title is None:
             return
@@ -829,6 +908,7 @@ class UsageWindow(tk.Tk):
         *,
         compact: bool = False,
         pace: dict[str, Any] | None = None,
+        reset_only: bool = False,
     ) -> None:
         pct = ccusage.percent(window.get("used"), window.get("cap"))
         bar = row["bar"]
@@ -859,6 +939,9 @@ class UsageWindow(tk.Tk):
             )
             return
         reset_text = ccusage.format_reset(window.get("resetAt")).split(" (", 1)[0]
+        if reset_only:
+            detail.configure(text=f"reset {reset_text}", fg="#94a3b8")
+            return
         if pace is not None:
             delta = round(float(pace.get("deltaPoints", 0)))
             status = pace.get("status")
