@@ -18,6 +18,11 @@ CLAUDE_API_BASE = "https://api.anthropic.com"
 USAGE_ENDPOINT = "/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"
 DEFAULT_REFRESH_SECONDS = 30
+# The usage endpoint rate limits easily, so a failure must back off rather than
+# retry on the next UI tick.
+RETRY_SECONDS = 60
+# Beyond this the cached reading is too old to present as the current number.
+STALE_AFTER_SECONDS = 150
 REQUEST_TIMEOUT = 20
 EXPIRY_SKEW_SECONDS = 30
 LOGGER = logging.getLogger("ccusage-monitor")
@@ -189,35 +194,55 @@ def dump_claude_usage() -> dict[str, Any]:
 class ClaudeUsageClient:
     """Cache plan usage so the 1 second UI loop does not hit the API every tick."""
 
-    def __init__(self, refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> None:
+    def __init__(
+        self,
+        refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
+        retry_seconds: int = RETRY_SECONDS,
+    ) -> None:
         self.refresh_seconds = max(1, refresh_seconds)
+        self.retry_seconds = max(self.refresh_seconds, retry_seconds)
         self.lock = threading.Lock()
-        self.last_fetch_at = 0.0
+        self.next_attempt_at = 0.0
         self.last_usage: dict[str, Any] | None = None
+        self.last_success_at: float | None = None
         self.last_error: str | None = None
+
+    def _cached(self) -> dict[str, Any]:
+        """Hand back the cached reading, saying how old it is."""
+        assert self.last_usage is not None
+        age = 0.0 if self.last_success_at is None else time.time() - self.last_success_at
+        return dict(
+            self.last_usage,
+            ageSeconds=age,
+            stale=age > STALE_AFTER_SECONDS,
+            error=self.last_error,
+        )
 
     def read_usage(self) -> dict[str, Any]:
         with self.lock:
             now = time.monotonic()
-            if (
-                self.last_usage is not None
-                and now - self.last_fetch_at < self.refresh_seconds
-            ):
-                return self.last_usage
+            if now < self.next_attempt_at:
+                if self.last_usage is not None:
+                    return self._cached()
+                raise ClaudeUsageError(self.last_error or "Claude usage unavailable.")
 
             try:
                 usage = fetch_claude_usage()
             except Exception as exc:
-                LOGGER.info("Claude usage request failed")
-                if self.last_usage is not None:
-                    return self.last_usage
+                # The messages raised here never carry the token.
+                LOGGER.info("Claude usage request failed: %s", exc)
+                # Hold off either way. Without this a failure repeats every tick.
+                self.next_attempt_at = now + self.retry_seconds
                 self.last_error = str(exc)
+                if self.last_usage is not None:
+                    return self._cached()
                 raise
 
-            self.last_fetch_at = now
+            self.next_attempt_at = now + self.refresh_seconds
             self.last_usage = usage
+            self.last_success_at = time.time()
             self.last_error = None
-            return usage
+            return self._cached()
 
 
 if __name__ == "__main__":

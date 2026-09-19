@@ -759,6 +759,12 @@ class UsageWindow(tk.Tk):
                 claude_data = self.claude_client.read_usage()
             except Exception as exc:  # The message is shown in the small status area.
                 errors.append(f"Claude: {exc}")
+            else:
+                # A cached reading must not pass for the current number.
+                if claude_data.get("stale"):
+                    errors.append(
+                        f"Claude: {claude_data.get('error') or 'reading is out of date'}"
+                    )
 
         if self.cursor_enabled:
             try:
@@ -887,16 +893,34 @@ class UsageWindow(tk.Tk):
         self.claude_title.configure(
             text=claude_usage.format_claude_title(claude_data.get("subscription"))
         )
+        stale = bool(claude_data.get("stale"))
         windows = (
             ("fiveHour", "claudeFiveHour"),
             ("sevenDay", "claudeWeekly"),
         )
         for window_key, row_key in windows:
             window = claude_data.get(window_key)
-            if isinstance(window, dict):
-                self._update_row(self.rows[row_key], window, reset_only=True)
-            else:
+            if not isinstance(window, dict):
                 self._clear_row(self.rows[row_key])
+                continue
+            self._update_row(self.rows[row_key], window, reset_only=True)
+            if stale:
+                self._mark_stale(self.rows[row_key], claude_data.get("ageSeconds"))
+
+    @staticmethod
+    def _mark_stale(row: dict[str, tk.Widget], age_seconds: Any) -> None:
+        """Say the number is old instead of letting it read as current."""
+        detail = row.get("detail")
+        if not isinstance(detail, tk.Label):
+            return
+        try:
+            minutes = max(1, int(float(age_seconds) // 60))
+        except (TypeError, ValueError):
+            minutes = 1
+        detail.configure(
+            text=f"{detail.cget('text')} · {minutes}m old",
+            fg=PACE_COLORS["over"],
+        )
 
     def _update_cursor_usage(self, cursor_data: dict[str, Any] | None) -> None:
         if not self.cursor_enabled or self.cursor_title is None:

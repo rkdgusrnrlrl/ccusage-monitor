@@ -38,6 +38,8 @@
 - Claude 사용량은 현재 로그인된 로컬 Claude Code 세션으로 읽는다. `~/.claude/.credentials.json`(또는 `CLAUDE_CONFIG_DIR`)의 OAuth 토큰을 요청 순간에만 읽고, 끝나면 메모리에서 버린다. 복사·로그·저장하지 않는다.
 - `GET https://api.anthropic.com/api/oauth/usage`의 `five_hour`·`seven_day` `utilization`을 5h·7d 행에 쓴다. Claude Code의 `/usage`가 쓰는 것과 같은 인터페이스다.
 - Claude 사용량 API는 1초마다 호출하지 않는다. 최소 30초 간격을 유지하고 직전 성공 값을 재사용한다.
+- 이 엔드포인트는 429를 쉽게 돌려준다. 실패했을 때도 다음 시도 시각을 반드시 뒤로 미뤄서(`RETRY_SECONDS`) 1초마다 재시도하는 상태로 떨어지지 않게 한다. 성공·실패 모두에서 다음 시도 시각을 갱신한다.
+- 캐시한 값을 계속 보여줄 때는 조용히 최신 값인 척하지 않는다. `STALE_AFTER_SECONDS`가 지나면 상세 줄에 경과 시간을 붙이고 상태 줄에도 오류를 남긴다.
 - 토큰이 만료됐으면 요청을 보내지 않고 다시 로그인하라는 오류로 처리한다. 토큰을 직접 갱신하지 않는다. 갱신은 Claude Code가 한다.
 - Claude 5h·7d는 퍼센트만 있는 창이라 상세 줄에 `reset …`만 표시한다. `used / cap`을 되살리지 않는다.
 
