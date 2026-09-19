@@ -1,4 +1,7 @@
 {
+  "claude": {
+    "enabled": true
+  },
   "cursor": {
     "enabled": true
   },
