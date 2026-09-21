@@ -21,6 +21,7 @@
 - 창은 CommandCode를 환경 변수나 `~/.commandcode/auth.json`만으로 켜지 않는다. CLI `ccusage.py`만 기존 환경 변수와 로컬 인증 파일을 쓴다.
 - `ccusage.py`는 현재 로컬 CommandCode 인증 파일의 `userId`를 화면용 fallback 값으로만 읽을 수 있다. 진단 출력에 실제 값을 노출하지 않는다.
 - `config.json`의 `cursor.enabled`가 `false`이면 Cursor 열을 생략하고 창 너비도 줄인다. 키가 없으면 Cursor는 켠 상태로 둔다. `claude.enabled`도 같은 방식으로 동작한다.
+- `config.json`의 `claude.auto_refresh`가 `false`이면 만료된 Claude 토큰을 직접 갱신하지 않는다. 키가 없으면 갱신하는 쪽이 기본이다.
 
 ## Codex 사용량 연동
 
@@ -38,9 +39,17 @@
 - Claude 사용량은 현재 로그인된 로컬 Claude Code 세션으로 읽는다. `~/.claude/.credentials.json`(또는 `CLAUDE_CONFIG_DIR`)의 OAuth 토큰을 요청 순간에만 읽고, 끝나면 메모리에서 버린다. 복사·로그·저장하지 않는다.
 - `GET https://api.anthropic.com/api/oauth/usage`의 `five_hour`·`seven_day` `utilization`을 5h·7d 행에 쓴다. Claude Code의 `/usage`가 쓰는 것과 같은 인터페이스다.
 - Claude 사용량 API는 1초마다 호출하지 않는다. 최소 30초 간격을 유지하고 직전 성공 값을 재사용한다.
-- 이 엔드포인트는 429를 쉽게 돌려준다. 실패했을 때도 다음 시도 시각을 반드시 뒤로 미뤄서(`RETRY_SECONDS`) 1초마다 재시도하는 상태로 떨어지지 않게 한다. 성공·실패 모두에서 다음 시도 시각을 갱신한다.
 - 캐시한 값을 계속 보여줄 때는 조용히 최신 값인 척하지 않는다. `STALE_AFTER_SECONDS`가 지나면 상세 줄에 경과 시간을 붙이고 상태 줄에도 오류를 남긴다.
-- 토큰이 만료됐으면 요청을 보내지 않고 다시 로그인하라는 오류로 처리한다. 토큰을 직접 갱신하지 않는다. 갱신은 Claude Code가 한다.
+- 액세스 토큰 수명은 8시간이라 하룻밤 자면 만료된다. 만료된 토큰으로는 요청을 보내지 않고, 저장된 리프레시 토큰으로 직접 갱신한 뒤 요청한다. `claude`를 먼저 실행해야만 동작하는 상태로 되돌리지 않는다.
+- 토큰 갱신에는 아래 안전장치를 모두 유지한다. 하나라도 빼지 않는다.
+  - `config.json`의 `claude.auto_refresh`가 `false`면 갱신하지 않고 기존처럼 다시 로그인하라는 오류를 낸다.
+  - 액세스 토큰이 실제로 만료됐을 때만 갱신한다. 미리 갱신하지 않는다.
+  - 갱신은 `.credentials.json.ccusage.lock` 락으로 한 번에 하나만 수행한다. 오래된 락은 `LOCK_STALE_SECONDS`가 지나면 회수한다.
+  - 락을 잡은 뒤 파일을 다시 읽는다. 그 사이 Claude Code가 새 토큰을 썼으면 갱신하지 않고 그 토큰을 쓴다.
+  - 쓰기 전에 `.credentials.json.ccusage.bak`으로 백업하고, 임시 파일에 쓴 뒤 `os.replace`로 교체하고, 다시 읽어 검증한다. 실패하면 원본으로 되돌린다.
+  - 응답의 `refresh_token`은 rotation이므로 반드시 저장한다. 그 외 필드는 그대로 보존한다.
+  - 갱신이 거절되면(`ClaudeRefreshRejected`) 자격증명 파일이 바뀔 때까지 다시 시도하지 않는다. 일시적 실패는 `REFRESH_RETRY_SECONDS`만큼 쉬었다 시도한다.
+- 이 엔드포인트는 429를 쉽게 돌려준다. 실패했을 때도 다음 시도 시각을 반드시 뒤로 미루고, 429가 이어지면 `RATE_LIMIT_BACKOFF_SECONDS` 사다리(60s→2m→5m→10m)로 물러난다. 응답에 `Retry-After`가 있으면 사다리 값보다 긴 쪽을 따른다.
 - Claude 5h·7d는 퍼센트만 있는 창이라 상세 줄에 `reset …`만 표시한다. `used / cap`을 되살리지 않는다.
 
 ## Cursor 사용량 연동

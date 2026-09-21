@@ -9,6 +9,9 @@ env/
 .env
 .env.*
 config.json
+*.ccusage.bak
+*.ccusage.tmp
+*.ccusage.lock
 
 build/
 dist/

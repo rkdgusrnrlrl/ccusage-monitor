@@ -162,6 +162,20 @@ def is_claude_enabled() -> bool:
     return _is_provider_enabled("claude")
 
 
+def is_claude_auto_refresh_enabled() -> bool:
+    """Renewing the expired Claude token is on unless config turns it off."""
+    try:
+        config = load_app_config()
+    except ccusage.CommandCodeError:
+        return True
+    if not isinstance(config, dict):
+        return True
+    provider = config.get("claude")
+    if not isinstance(provider, dict):
+        return True
+    return provider.get("auto_refresh", True) is not False
+
+
 def window_width_for_columns(column_count: int) -> int:
     """Scale the compact window to the number of visible provider columns."""
     return WINDOW_CHROME_WIDTH + COLUMN_WIDTH * max(1, column_count)
@@ -437,6 +451,7 @@ class UsageWindow(tk.Tk):
         self.codex_initial = self._probe_codex()
         self.codex_enabled = self.codex_initial is not None
         self.claude_enabled = is_claude_enabled()
+        claude_usage.set_auto_refresh(is_claude_auto_refresh_enabled())
         self.cursor_enabled = is_cursor_enabled()
         self.commandcode_config_error: str | None = None
         try:
