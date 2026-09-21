@@ -1,6 +1,7 @@
 {
   "claude": {
-    "enabled": true
+    "enabled": true,
+    "auto_refresh": true
   },
   "cursor": {
     "enabled": true
