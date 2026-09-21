@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import queue
 import argparse
+import ctypes
 import json
 import logging
 import os
@@ -50,6 +51,36 @@ CLAUDE_REFRESH_SECONDS = 30
 CODEX_TIMEOUT = 15
 # A hung app-server must not hold the window back at startup.
 CODEX_PROBE_TIMEOUT = 5
+# Windows drops WS_EX_TOPMOST behind our back: another app going exclusive
+# fullscreen, the UAC secure desktop, the lock screen, a session reconnect or
+# an explorer.exe restart all demote us. Setting the flag once at startup is
+# not enough, so every refresh re-asserts it.
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+
+if os.name == "nt":
+    from ctypes import wintypes
+
+    # Declare the prototypes so 64-bit handles are not truncated to c_int.
+    _USER32 = ctypes.windll.user32
+    _USER32.GetParent.argtypes = [wintypes.HWND]
+    _USER32.GetParent.restype = wintypes.HWND
+    _USER32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    _USER32.SetWindowPos.restype = wintypes.BOOL
+else:
+    _USER32 = None
+
+
 LOG_PATH = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     / "ccusage-monitor"
@@ -739,8 +770,30 @@ class UsageWindow(tk.Tk):
         row.columnconfigure(1, weight=1)
         self.rows[key] = {"bar": bar, "percent": percent, "detail": detail}
 
+    def _keep_on_top(self) -> None:
+        """Put the window back on top after Windows demotes it."""
+        if _USER32 is None:
+            return
+        try:
+            inner = self.winfo_id()
+            # Tk hangs the visible toplevel off a wrapper window.
+            hwnd = _USER32.GetParent(inner) or inner
+            _USER32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                # NOACTIVATE keeps us from stealing focus every second.
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        except Exception:
+            LOGGER.debug("Could not re-assert always-on-top", exc_info=True)
+
     def refresh(self) -> None:
         self.after_id = self.after(self.refresh_ms, self.refresh)
+        self._keep_on_top()
         if self.refresh_pending:
             return
 
